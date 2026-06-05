@@ -57,7 +57,7 @@ const ProductCard = ({ p }) => {
             </h5>
           </Link>
           <p className="font-bold text-pink-400 text-lg ml-2 whitespace-nowrap">
-            ₹{p?.price?.toFixed(2)}
+            ₹{(p?.price?? 0).toFixed(2)}
           </p>
         </div>
 
@@ -65,7 +65,7 @@ const ProductCard = ({ p }) => {
         <div className="flex items-center gap-1 mb-3">
           <FaStar className="text-yellow-400" size={14} />
           <span className="text-gray-400 text-sm">
-            {p?.rating?.toFixed(1) || "N/A"} ({p?.numReviews || 0} reviews)
+            {(p?.rating?? 0).toFixed(1)} ({p?.numReviews || 0} reviews)
           </span>
         </div>
 

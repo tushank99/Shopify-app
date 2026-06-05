@@ -2,6 +2,8 @@ import asyncHandler from "../middlewares/asyncHandler.js";
 import Product from "../models/productModel.js";
 import Order from "../models/orderModel.js";
 import axios from "axios";
+import redis from "../config/redis.js";
+import { recommendationQueue } from "../queues/recommendationQueue.js";
 
 const addProduct = asyncHandler(async (req, res) => {
   try {
@@ -186,6 +188,16 @@ const addProductReview = asyncHandler(async (req, res) => {
         product.reviews.length;
 
       await product.save();
+      //  Wipe the cache so recommendations update on the next homepage load
+      await redis.del(`recs:${req.user._id.toString()}`);
+      // Drops the job into Redis RAM instantly and moves on
+      await recommendationQueue.add(`update-user-${req.user._id}`, {
+        userId: req.user._id.toString()
+      }, {
+        attempts: 3,             // If Python is busy, retry up to 3 times automatically
+        backoff: 5000            // Wait 5 seconds between retries
+      });
+
       res.status(201).json({ message: "Review added successfully" });
     } else {
       res.status(404);
@@ -299,54 +311,57 @@ const filterProducts = asyncHandler(async (req, res) => {
 // @route   GET /api/products/recommendations
 // @access  Private
 const getRecommendations = asyncHandler(async (req, res) => {
-  // Define fallback logic clearly so we can use it in multiple places if something breaks
+  const userId = req.user._id.toString();
+  const cacheKey = `recs:${userId}`;
+
   const handleFallback = async () => {
-    return await Product.find({})
-      .populate("category")
-      .sort({ rating: -1 })
-      .limit(12); // Send a strong selection of 12 top-tier items
+    return await Product.find({}).populate("category").sort({ rating: -1 }).limit(12);
   };
 
   try {
-    const userId = req.user._id.toString();
+    // 1. Check if recommendations exist in the Redis RAM Cache
+    const cachedData = await redis.get(cacheKey);
+    if (cachedData) {
+      console.log(`Redis Cache Hit: Serving high-speed recommendations for user: ${userId}`);
+      return res.json(JSON.parse(cachedData));
+    }
 
-    // 1. Defend against the Cold Start Problem
-    // If the user hasn't dropped a review yet, don't waste network cycles calling Python
+    console.log(`Redis Cache Miss: Fetching fresh data for user: ${userId}`);
+
+    // 2. Cold Start Check: See if the user has left any reviews
     const hasReviews = await Product.findOne({ "reviews.user": req.user._id });
-
     if (!hasReviews) {
-      console.log(`❄️ Cold Start: User ${userId} has no transaction history. Serving top-rated fallback.`);
+      console.log(`Cold Start: User ${userId} has no history. Serving top-rated fallback.`);
       const fallbackProducts = await handleFallback();
+      
+      // Cache the cold start fallback for 24 hours so we don't query MongoDB constantly
+      await redis.set(cacheKey, JSON.stringify(fallbackProducts), "EX", 86400);
       return res.json(fallbackProducts);
     }
 
-    // 2. Dispatch a low-latency HTTP GET request to our Python FastAPI service
-    console.log(`📡 Dispatched recommendation request to ML sidecar for user: ${userId}`);
-    
-    // We explicitly assign a tight 1-second timeout so a hanging ML service won't freeze our Node app
+    // 3. Dispatch recommendation request to Python ML sidecar
+    console.log(`Dispatched recommendation request to ML sidecar for user: ${userId}`);
     const response = await axios.get(`http://127.0.0.1:8000/recommend/${userId}`, { timeout: 1000 });
     const recommendedIds = response.data.recommendations;
 
     if (!recommendedIds || recommendedIds.length === 0) {
       const fallbackProducts = await handleFallback();
+      await redis.set(cacheKey, JSON.stringify(fallbackProducts), "EX", 86400);
       return res.json(fallbackProducts);
     }
 
-    // 3. Query MongoDB for the full product documents matching these specific IDs
+    // 4. Fetch the predicted products from MongoDB and maintain Python's strict SVD order
     const products = await Product.find({ _id: { $in: recommendedIds } }).populate("category");
-
-    // CRITICAL MATCHING STEP: MongoDB's $in operator shuffles the data order.
-    // We map over our explicit recommendedIds array to guarantee our final JSON array
-    // perfectly mirrors the mathematical ranking order calculated by SVD.
     const orderedProducts = recommendedIds
       .map(id => products.find(prod => prod._id.toString() === id))
-      .filter(Boolean); // Discard any undefined values safely
+      .filter(Boolean);
+
+    // 5. Save the ordered array into Redis with a 24-Hour Expiration (86400 seconds)
+    await redis.set(cacheKey, JSON.stringify(orderedProducts), "EX", 86400);
 
     res.json(orderedProducts);
-
   } catch (error) {
-    // 4. Fault Tolerance: If Python crashes, timed out, or threw an error, degrade gracefully
-    console.error(`⚠️ ML Engine integration failed: ${error.message}. Executing resilient fallback layer.`);
+    console.error(`ML Engine integration failed: ${error.message}. Executing resilient fallback layer.`);
     const fallbackProducts = await handleFallback();
     res.json(fallbackProducts);
   }

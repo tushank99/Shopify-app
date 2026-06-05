@@ -1,28 +1,19 @@
 import Order from "../models/orderModel.js";
 import Product from "../models/productModel.js";
 
-// Utility Function
+// 1. Updated price calculation to remove all taxes and shipping fees
 function calcPrices(orderItems) {
-  const itemsPrice = orderItems.reduce(
-    (acc, item) => acc + item.price * item.qty,
-    0
-  );
-
-  const shippingPrice = itemsPrice > 100 ? 0 : 10;
-  const taxRate = 0.15;
-  const taxPrice = (itemsPrice * taxRate).toFixed(2);
-
-  const totalPrice = (
-    itemsPrice +
-    shippingPrice +
-    parseFloat(taxPrice)
-  ).toFixed(2);
+  const itemsPrice = orderItems.reduce((acc, item) => acc + item.price * item.qty, 0);
+  
+  const shippingPrice = 0; 
+  const taxPrice = 0;      
+  const totalPrice = itemsPrice; // Total is just the items' price
 
   return {
     itemsPrice: itemsPrice.toFixed(2),
     shippingPrice: shippingPrice.toFixed(2),
-    taxPrice,
-    totalPrice,
+    taxPrice: taxPrice.toFixed(2),
+    totalPrice: totalPrice.toFixed(2),
   };
 }
 
@@ -57,9 +48,9 @@ const createOrder = async (req, res) => {
       };
     });
 
-    const { itemsPrice, taxPrice, shippingPrice, totalPrice } =
-      calcPrices(dbOrderItems);
+    const { itemsPrice, taxPrice, shippingPrice, totalPrice } = calcPrices(dbOrderItems);
 
+    // 2. Forced order to automatically be created as "Paid"
     const order = new Order({
       orderItems: dbOrderItems,
       user: req.user._id,
@@ -69,6 +60,14 @@ const createOrder = async (req, res) => {
       taxPrice,
       shippingPrice,
       totalPrice,
+      isPaid: true,       // Automatically mark as Paid
+      paidAt: Date.now(), //  Add payment timestamp instantly
+      paymentResult: {
+        id: "MOCK_PAYPAL_SANDBOX_ID_" + Math.random().toString(36).substr(2, 9),
+        status: "COMPLETED",
+        update_time: new Date().toISOString(),
+        email_address: req.user.email || "test_buyer@example.com",
+      }
     });
 
     const createdOrder = await order.save();
@@ -132,7 +131,6 @@ const calcualteTotalSalesByDate = async (req, res) => {
         },
       },
     ]);
-
     res.json(salesByDate);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -141,11 +139,7 @@ const calcualteTotalSalesByDate = async (req, res) => {
 
 const findOrderById = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id).populate(
-      "user",
-      "username email"
-    );
-
+    const order = await Order.findById(req.params.id).populate("user", "username email");
     if (order) {
       res.json(order);
     } else {
@@ -160,7 +154,6 @@ const findOrderById = async (req, res) => {
 const markOrderAsPaid = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
-
     if (order) {
       order.isPaid = true;
       order.paidAt = Date.now();
@@ -170,7 +163,6 @@ const markOrderAsPaid = async (req, res) => {
         update_time: req.body.update_time,
         email_address: req.body.payer.email_address,
       };
-
       const updateOrder = await order.save();
       res.status(200).json(updateOrder);
     } else {
@@ -185,11 +177,9 @@ const markOrderAsPaid = async (req, res) => {
 const markOrderAsDelivered = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
-
     if (order) {
       order.isDelivered = true;
       order.deliveredAt = Date.now();
-
       const updatedOrder = await order.save();
       res.json(updatedOrder);
     } else {

@@ -1,2 +1,13 @@
+# Node Dependencies
 /node_modules
+/frontend/node_modules
+
+# Python Virtual Environments & Cache
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+
+# Local Environment Variables
 .env
