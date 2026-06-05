@@ -4,10 +4,12 @@ import Product from "../models/productModel.js";
 import redis from "../config/redis.js"; 
 
 
-const redisConnection = {
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: process.env.REDIS_PORT || 6379,
-};
+const redisConnection = process.env.REDIS_URL 
+  ? process.env.REDIS_URL // Uses Upstash/Cloud connection string in production
+  : {
+      host: process.env.REDIS_HOST || "127.0.0.1",
+      port: process.env.REDIS_PORT || 6379,
+    };
 
 // 1. Initialize the Producer Queue
 export const recommendationQueue = new Queue("recommendation-updates", {

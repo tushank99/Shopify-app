@@ -2,6 +2,7 @@ import User from "../models/userModel.js";
 import asyncHandler from "../middlewares/asyncHandler.js";
 import bcrypt from "bcryptjs";
 import createToken from "../utils/createToken.js";
+import redis from "../config/redis.js";
 
 const createUser = asyncHandler(async (req, res) => {
   const { username, email, password } = req.body;
@@ -70,8 +71,21 @@ const loginUser = asyncHandler(async (req, res) => {
 });
 
 const logoutCurrentUser = asyncHandler(async (req, res) => {
+  try {
+    // Remove recommendation data from RAM cache on logout
+    if (req.user?._id) {
+      const cacheKey = `recs:${req.user._id.toString()}`;
+      await redis.del(cacheKey);
+      console.log(`🧹 Cache Evicted: Successfully removed Redis cache key "${cacheKey}" for logging-out user.`);
+    } else {
+      console.log("⚠️ Cache Eviction Skipped: req.user was not populated (Check if auth middleware is on this route).");
+    }
+  } catch (cacheError) {
+    console.error(`Redis Eviction Hook Failed: ${cacheError.message}`);
+  }
+
   res.cookie("jwt", "", {
-    httyOnly: true,
+    httpOnly: true,
     expires: new Date(0),
   });
 

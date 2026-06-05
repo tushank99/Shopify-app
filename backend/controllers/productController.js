@@ -81,24 +81,32 @@ const removeProduct = asyncHandler(async (req, res) => {
 
 const fetchProducts = asyncHandler(async (req, res) => {
   try {
-    const pageSize = parseInt(req.query.limit) || 50; // Increased default limit
+    const pageSize = parseInt(req.query.limit) || 50;
     const page = parseInt(req.query.page) || 1;
+    
+    // Switch from slow $regex to optimized native MongoDB Text Index search
+    let query = {};
+    if (req.query.keyword) {
+      query = { $text: { $search: req.query.keyword } };
+    }
 
-    const keyword = req.query.keyword
-      ? {
-          $or: [
-            { name: { $regex: req.query.keyword, $options: "i" } },
-            { brand: { $regex: req.query.keyword, $options: "i" } },
-            { description: { $regex: req.query.keyword, $options: "i" } },
-          ],
-        }
-      : {};
-
-    const count = await Product.countDocuments({ ...keyword });
-    const products = await Product.find({ ...keyword })
-      .limit(pageSize)
-      .skip(pageSize * (page - 1))
-      .sort({ createdAt: -1 });
+    const count = await Product.countDocuments(query);
+    
+    // If performing a text search, sort by text relevance score; otherwise sort by newest
+    let products;
+    if (req.query.keyword) {
+      products = await Product.find(query)
+        .select({ score: { $meta: "textScore" } })
+        .sort({ score: { $meta: "textScore" } })
+        .limit(pageSize)
+        .skip(pageSize * (page - 1));
+    } else {
+      products = await Product.find(query)
+        .sort({ createdAt: -1 }) // Utilizes our new { createdAt: -1 } B-Tree Index!
+        .limit(pageSize)
+        .skip(pageSize * (page - 1))
+        .populate("category");
+    }
 
     res.json({
       products,
@@ -366,6 +374,58 @@ const getRecommendations = asyncHandler(async (req, res) => {
     res.json(fallbackProducts);
   }
 });
+const explainQuery = asyncHandler(async (req, res) => {
+  try {
+    const keyword = req.query.keyword || "";
+    let query = {};
+    
+    if (keyword) {
+      query = { $text: { $search: keyword } };
+    }
+
+    // Execute the query planner details directly from MongoDB
+    const executionStats = await Product.find(query)
+      .sort(keyword ? {} : { createdAt: -1 })
+      .explain("executionStats");
+
+    res.json({
+      message: "Query optimization diagnostic report generated successfully.",
+      targetQuery: query,
+      winningPlanStage: executionStats.queryPlanner?.winningPlan?.stage || "UNKNOWN",
+      stats: executionStats.executionStats
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+const testMutexLock = asyncHandler(async (req, res) => {
+  const testLockKey = "recs:lock:test_user_123";
+
+  try {
+    // Attempt to acquire the lock for 5 seconds
+    const acquiredLock = await redis.set(testLockKey, "locked", "EX", 5, "NX");
+
+    if (!acquiredLock) {
+      //  Subsequent requests hit this block instantly
+      return res.status(429).json({ 
+        message: "Cache Stampede Prevented! Mutex is locked. Serving fallback data." 
+      });
+    }
+
+    // 1st request gets here. Simulate a 2-second heavy Python ML calculation delay
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Release lock
+    await redis.del(testLockKey);
+
+    return res.status(200).json({ 
+      message: "Success! Request 1 acquired the lock and completed the heavy calculation." 
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 
 
 export {
@@ -382,4 +442,6 @@ export {
   markReviewHelpful,
   canUserReview,
   getRecommendations,
+  explainQuery,
+  testMutexLock,
 };
