@@ -6,10 +6,11 @@ import { FaArrowRight, FaStar, FaShippingFast, FaShieldAlt, FaHeadset } from "re
 import HeartIcon from "./Products/HeartIcon";
 import PropTypes from "prop-types";
 import { getImageUrl, handleImageError } from "../Utils/imageUtils";
+import PersonalizedRecommendations from "./Products/PersonalizedRecommendations";
 
 const Home = () => {
   const { keyword } = useParams();
-  const { data, isLoading, isError } = useGetProductsQuery({ keyword });
+  const { data, isLoading, isError, error } = useGetProductsQuery({ keyword });
   const { data: topProducts } = useGetTopProductsQuery();
   const { data: newProducts } = useGetNewProductsQuery();
 
@@ -110,13 +111,18 @@ const Home = () => {
         </div>
       </section>
 
+      
+      <PersonalizedRecommendations />
+
+      
+
       {isLoading ? (
         <div className="flex justify-center py-20">
           <Loader />
         </div>
       ) : isError ? (
         <Message variant="danger">
-          {isError?.data?.message || isError.error}
+          {error?.data?.message || error?.error || "Failed to load products."}
         </Message>
       ) : (
         <>

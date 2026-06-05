@@ -1,6 +1,7 @@
 import asyncHandler from "../middlewares/asyncHandler.js";
 import Product from "../models/productModel.js";
 import Order from "../models/orderModel.js";
+import axios from "axios";
 
 const addProduct = asyncHandler(async (req, res) => {
   try {
@@ -294,6 +295,64 @@ const filterProducts = asyncHandler(async (req, res) => {
   }
 });
 
+// @desc    Get personalized SVD recommendations for a logged-in user via Python microservice
+// @route   GET /api/products/recommendations
+// @access  Private
+const getRecommendations = asyncHandler(async (req, res) => {
+  // Define fallback logic clearly so we can use it in multiple places if something breaks
+  const handleFallback = async () => {
+    return await Product.find({})
+      .populate("category")
+      .sort({ rating: -1 })
+      .limit(12); // Send a strong selection of 12 top-tier items
+  };
+
+  try {
+    const userId = req.user._id.toString();
+
+    // 1. Defend against the Cold Start Problem
+    // If the user hasn't dropped a review yet, don't waste network cycles calling Python
+    const hasReviews = await Product.findOne({ "reviews.user": req.user._id });
+
+    if (!hasReviews) {
+      console.log(`❄️ Cold Start: User ${userId} has no transaction history. Serving top-rated fallback.`);
+      const fallbackProducts = await handleFallback();
+      return res.json(fallbackProducts);
+    }
+
+    // 2. Dispatch a low-latency HTTP GET request to our Python FastAPI service
+    console.log(`📡 Dispatched recommendation request to ML sidecar for user: ${userId}`);
+    
+    // We explicitly assign a tight 1-second timeout so a hanging ML service won't freeze our Node app
+    const response = await axios.get(`http://127.0.0.1:8000/recommend/${userId}`, { timeout: 1000 });
+    const recommendedIds = response.data.recommendations;
+
+    if (!recommendedIds || recommendedIds.length === 0) {
+      const fallbackProducts = await handleFallback();
+      return res.json(fallbackProducts);
+    }
+
+    // 3. Query MongoDB for the full product documents matching these specific IDs
+    const products = await Product.find({ _id: { $in: recommendedIds } }).populate("category");
+
+    // CRITICAL MATCHING STEP: MongoDB's $in operator shuffles the data order.
+    // We map over our explicit recommendedIds array to guarantee our final JSON array
+    // perfectly mirrors the mathematical ranking order calculated by SVD.
+    const orderedProducts = recommendedIds
+      .map(id => products.find(prod => prod._id.toString() === id))
+      .filter(Boolean); // Discard any undefined values safely
+
+    res.json(orderedProducts);
+
+  } catch (error) {
+    // 4. Fault Tolerance: If Python crashes, timed out, or threw an error, degrade gracefully
+    console.error(`⚠️ ML Engine integration failed: ${error.message}. Executing resilient fallback layer.`);
+    const fallbackProducts = await handleFallback();
+    res.json(fallbackProducts);
+  }
+});
+
+
 export {
   addProduct,
   updateProductDetails,
@@ -307,4 +366,5 @@ export {
   filterProducts,
   markReviewHelpful,
   canUserReview,
+  getRecommendations,
 };

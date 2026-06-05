@@ -5,17 +5,19 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "backend": "nodemon backend/index.js",
-    "frontend": "npm run dev --prefix frontend",
-    "dev": "concurrently \"npm run frontend\" \"npm run backend",
-    "build": "cd frontend && npm install && npm run build",
-    "vercel-build": "cd frontend && npm install && npm run build"
+    "backend": "cd backend && nodemon index.js",
+    "frontend": "cd frontend && npm run dev",
+    "ml": "cd ml-backend && .\\.venv\\Scripts\\activate && python -m uvicorn main:app --port 8000 --reload",
+   "build": "pnpm --filter frontend install && pnpm --filter frontend build",
+  "vercel-build": "pnpm --filter frontend install && pnpm --filter frontend build"
   },
   "keywords": [],
   "author": "HuXn WebDev",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.17.0",
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.78.0",
     "cloudinary": "^1.41.3",
     "concurrently": "^8.2.2",
     "cookie-parser": "^1.4.6",
@@ -24,6 +26,7 @@
     "express": "^4.18.2",
     "express-async-handler": "^1.2.0",
     "express-formidable": "^1.2.0",
+    "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.6.3",
     "multer": "^1.4.5-lts.1",

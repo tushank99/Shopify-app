@@ -24,6 +24,29 @@ const adminUser = {
   isAdmin: true,
 };
 
+const reviewers = [
+  { username: "rahul_sharma", email: "rahul@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "priya_patel", email: "priya@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "amit_kumar", email: "amit@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "sneha_gupta", email: "sneha@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "vikram_singh", email: "vikram@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "anjali_verma", email: "anjali@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "rohan_mehta", email: "rohan@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "pooja_reddy", email: "pooja@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "arjun_nair", email: "arjun@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "kavita_joshi", email: "kavita@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "sanjay_rao", email: "sanjay@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "meera_iyer", email: "meera@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "aditya_chopra", email: "aditya@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "divya_menon", email: "divya@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "karan_malhotra", email: "karan@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "neha_agarwal", email: "neha@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "rajesh_pillai", email: "rajesh@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "sunita_deshmukh", email: "sunita@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "vivek_saxena", email: "vivek@example.com", password: bcrypt.hashSync("123456", 10) },
+  { username: "ankita_behera", email: "ankita@example.com", password: bcrypt.hashSync("123456", 10) }
+];
+
 // Comprehensive product catalog
 const getProducts = (categoryIds) => [
   // ELECTRONICS - Headphones
@@ -687,13 +710,7 @@ const getProducts = (categoryIds) => [
   },
 ];
 
-// Fake reviewers with Indian names
-const reviewers = [
-  "Rahul Sharma", "Priya Patel", "Amit Kumar", "Sneha Gupta", "Vikram Singh",
-  "Anjali Verma", "Rohan Mehta", "Pooja Reddy", "Arjun Nair", "Kavita Joshi",
-  "Sanjay Rao", "Meera Iyer", "Aditya Chopra", "Divya Menon", "Karan Malhotra",
-  "Neha Agarwal", "Rajesh Pillai", "Sunita Deshmukh", "Vivek Saxena", "Anita Bose"
-];
+
 
 // Review templates for different ratings
 const reviewTemplates = {
@@ -726,12 +743,15 @@ const reviewTemplates = {
 };
 
 // Generate fake reviews for a product
-const generateFakeReviews = (numReviews, avgRating) => {
+const generateFakeReviews = (numReviews, avgRating, createdUsers) => {
   const reviews = [];
-  const reviewCount = Math.min(numReviews, 8); // Max 8 reviews per product for seeding
+  // Max out reviews based on our available user pool size
+  const reviewCount = Math.min(numReviews, 8, createdUsers.length); 
   
+  // Shuffle array to ensure randomized review distribution across products
+  const shuffledUsers = [...createdUsers].sort(() => 0.5 - Math.random());
+
   for (let i = 0; i < reviewCount; i++) {
-    // Generate rating around the average
     let rating;
     const rand = Math.random();
     if (rand < 0.5) rating = Math.round(avgRating);
@@ -743,19 +763,21 @@ const generateFakeReviews = (numReviews, avgRating) => {
     
     const templates = reviewTemplates[rating];
     const template = templates[Math.floor(Math.random() * templates.length)];
-    const reviewer = reviewers[Math.floor(Math.random() * reviewers.length)];
     
-    // Random date within last 6 months
+    // Select the target user document
+    const targetUser = shuffledUsers[i];
+    
     const daysAgo = Math.floor(Math.random() * 180);
     const reviewDate = new Date();
     reviewDate.setDate(reviewDate.getDate() - daysAgo);
     
     reviews.push({
-      name: reviewer,
+      user: targetUser._id,               // CRITICAL: The exact Mongo ID for Python to track
+      name: targetUser.username,         // Plain text string for the UI display
       rating: rating,
       title: template.title,
       comment: template.comment,
-      isVerifiedPurchase: Math.random() > 0.2, // 80% verified purchases
+      isVerifiedPurchase: Math.random() > 0.2, 
       helpfulVotes: Math.floor(Math.random() * 50),
       createdAt: reviewDate,
       updatedAt: reviewDate,
@@ -767,7 +789,6 @@ const generateFakeReviews = (numReviews, avgRating) => {
 
 const seedDatabase = async () => {
   try {
-    // Connect to MongoDB
     await mongoose.connect(process.env.MONGO_URI);
     console.log("MongoDB Connected");
 
@@ -775,31 +796,36 @@ const seedDatabase = async () => {
     await Product.deleteMany({});
     await Category.deleteMany({});
     await User.deleteMany({});
-    console.log("Cleared existing data");
+    console.log("Cleared existing collections");
 
     // Create admin user
-    const createdUser = await User.create(adminUser);
+    await User.create(adminUser);
     console.log("Admin user created: admin@example.com / 123456");
+
+    // CRITICAL UPDATE: Seed regular buyer accounts first to yield valid IDs
+    const createdUsers = await User.insertMany(reviewers);
+    console.log(`${createdUsers.length} dummy user accounts generated dynamically`);
 
     // Create categories
     const createdCategories = await Category.insertMany(categories);
     const categoryIds = createdCategories.map((cat) => cat._id);
     console.log(`${createdCategories.length} categories created`);
 
-    // Create products with reviews
+    // Create products with relational reviews mapping users
     const products = getProducts(categoryIds);
     const productsWithReviews = products.map(product => ({
       ...product,
-      reviews: generateFakeReviews(product.numReviews, product.rating)
+      reviews: generateFakeReviews(product.numReviews, product.rating, createdUsers)
     }));
     
     await Product.insertMany(productsWithReviews);
-    console.log(`${products.length} products created with reviews`);
+    console.log(`${products.length} products created with valid relational reviews`);
 
-    console.log("\n✅ Database seeded successfully!");
-    console.log(`\nTotal products: ${products.length}`);
-    console.log("\nYou can now login with:");
-    console.log("Email: admin@example.com");
+    console.log("\n✅ Database seeded successfully at Amazon ML Standard!");
+    
+    // Log a few dummy credentials so you can test logging in as a reviewer later
+    console.log("\nSample User to login with on the frontend:");
+    console.log(`Email: ${reviewers[0].email}`);
     console.log("Password: 123456");
 
     process.exit(0);

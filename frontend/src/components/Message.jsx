@@ -5,6 +5,7 @@ const Message = ({ variant, children }) => {
     switch (variant) {
       case "success":
         return "bg-green-100 text-green-800";
+      case "danger":
       case "error":
         return "bg-red-100 text-red-800";
       default:
@@ -12,12 +13,16 @@ const Message = ({ variant, children }) => {
     }
   };
 
-  return <div className={`p-4 rounded ${getVariantClass()}`}>{children}</div>;
+  return (
+    <div className={`p-4 rounded ${getVariantClass()}`}>
+      {children ?? "Something went wrong."}
+    </div>
+  );
 };
 
 Message.propTypes = {
   variant: PropTypes.string,
-  children: PropTypes.node.isRequired,
+  children: PropTypes.node,
 };
 
 export default Message;

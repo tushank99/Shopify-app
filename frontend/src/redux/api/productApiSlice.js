@@ -94,6 +94,7 @@ export const productApiSlice = apiSlice.injectEndpoints({
         url: `${PRODUCT_URL}/${productId}/can-review`,
       }),
     }),
+    
 
     markReviewHelpful: builder.mutation({
       query: ({ productId, reviewId }) => ({
@@ -102,7 +103,13 @@ export const productApiSlice = apiSlice.injectEndpoints({
         body: { reviewId },
       }),
     }),
+    getPersonalizedRecommendations: builder.query({
+      query: () => `${PRODUCT_URL}/recommendations`,
+      keepUnusedDataFor: 5,
+      providesTags: ["Products"],
+    }),
   }),
+  
 });
 
 export const {
@@ -120,4 +127,5 @@ export const {
   useGetFilteredProductsQuery,
   useCanUserReviewQuery,
   useMarkReviewHelpfulMutation,
+  useGetPersonalizedRecommendationsQuery,
 } = productApiSlice;
