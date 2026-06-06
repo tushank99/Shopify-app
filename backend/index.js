@@ -83,8 +83,8 @@ if (process.env.NODE_ENV === "production") {
 }
 
 // Only listen in non-serverless environment
-app.listen(port, "127.0.0.1", () => {
-  console.log(`🚀 Node Backend listening on http://127.0.0.1:${port}`);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Node Backend listening on 0.0.0.0:${port}`);
 });
 
 // Export for Vercel serverless
