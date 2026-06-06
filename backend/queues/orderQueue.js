@@ -1,9 +1,9 @@
 import { Queue, Worker } from "bullmq";
-import redis, { redisConfig } from "../config/redis.js"; // 🟢 Import config object
+import redis, { createRedisConnection } from "../config/redis.js"; // 🟢 Import connection factory
 import axios from "axios";
 
 export const orderQueue = new Queue("order-events", {
-  connection: redisConfig,
+  connection: createRedisConnection(),
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 2000 },
@@ -17,10 +17,10 @@ const orderWorker = new Worker("order-events", async (job) => {
   console.log(`BullMQ Order Worker processing [OrderPlaced] event for User: ${userId}`);
   try {
     const purchasedProductIds = items.map(item => item.product);
-    
+
     // Using the main singleton client here for data deletion commands is perfectly safe!
     await redis.del(`recs:${userId}`);
-    
+
     console.log(`Sending purchase data vectors to Python ML backend for User: ${userId}`);
     const ML_SERVICE_URL = process.env.ML_SERVICE_URL;
     if (!ML_SERVICE_URL) {
@@ -32,14 +32,14 @@ const orderWorker = new Worker("order-events", async (job) => {
       productIds: purchasedProductIds,
       eventType: "PURCHASE"
     }, { timeout: 5000 });
-    
+
     console.log(`Asynchronous post-purchase operations finalized for User: ${userId}`);
   } catch (error) {
     console.error(`Order Worker Error: ${error.message}`);
     throw error;
   }
 }, {
-  connection: redisConfig,
+  connection: createRedisConnection(),
   concurrency: 5,
 });
 

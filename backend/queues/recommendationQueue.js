@@ -1,10 +1,10 @@
 import { Queue, Worker } from "bullmq";
 import axios from "axios";
 import Product from "../models/productModel.js";
-import redis, { redisConfig } from "../config/redis.js"; // 🟢 Import config object
+import redis, { createRedisConnection } from "../config/redis.js"; // 🟢 Import connection factory
 
 export const recommendationQueue = new Queue("recommendation-updates", {
-  connection: redisConfig,
+  connection: createRedisConnection(),
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 2000 },
@@ -20,11 +20,11 @@ const worker = new Worker("recommendation-updates", async (job) => {
     const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://127.0.0.1:8000";
     const response = await axios.get(`${ML_SERVICE_URL}/recommend/${userId}`, { timeout: 3000 });
     const recommendedIds = response.data.recommendations;
-    
+
     if (recommendedIds && recommendedIds.length > 0) {
       const products = await Product.find({ _id: { $in: recommendedIds } }).populate("category");
       const orderedProducts = recommendedIds.map((id) => products.find((prod) => prod._id.toString() === id)).filter(Boolean);
-      
+
       // Using main client for data write execution is perfect
       await redis.set(`recs:${userId}`, JSON.stringify(orderedProducts), "EX", 86400);
       console.log(`BullMQ Worker successfully hot-swapped Redis cache vectors for User: ${userId}`);
@@ -34,7 +34,7 @@ const worker = new Worker("recommendation-updates", async (job) => {
     throw error;
   }
 }, {
-  connection: redisConfig, 
+  connection: createRedisConnection(),
   concurrency: 5,
 });
 
