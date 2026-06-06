@@ -1,11 +1,20 @@
 import { Queue, Worker } from "bullmq";
 import axios from "axios";
 import Product from "../models/productModel.js";
-import redis from "../config/redis.js"; //
+import redis from "../config/redis.js";
 
 // 1. Initialize the Queue using the shared connection client
 export const recommendationQueue = new Queue("recommendation-updates", {
   connection: redis,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 2000,
+    },
+    removeOnComplete: true,
+    removeOnFail: false,
+  }
 });
 
 // 2. Setup the Worker to process background calculations smoothly
@@ -29,15 +38,25 @@ const worker = new Worker(
           .filter(Boolean);
           
         await redis.set(`recs:${userId}`, JSON.stringify(orderedProducts), "EX", 86400);
-        console.log(`BullMQ Worker successfully hot-swapped Redis cache vectors for User: ${userId}`);
+        console.log(`✅ BullMQ Worker successfully hot-swapped Redis cache vectors for User: ${userId}`);
       }
     } catch (error) {
-      console.error(`BullMQ Worker failed to update user profile cache background execution: ${error.message}`);
+      console.error(`❌ BullMQ Worker failed to update user profile cache background execution: ${error.message}`);
       throw error;
     }
   },
-  { connection: redis } // 
+  { 
+    connection: redis,
+    concurrency: 5, // Limit concurrent jobs to prevent connection pool exhaustion
+  }
 );
 
-worker.on("completed", (job) => console.log(`Background Job ${job.id} finalized cleanly.`));
-worker.on("failed", (job, err) => console.error(`Background Job ${job.id} dropped: ${err.message}`));
+worker.on("completed", (job) => console.log(`✅ Background Job ${job.id} finalized cleanly.`));
+worker.on("failed", (job, err) => console.error(`❌ Background Job ${job.id} dropped: ${err.message}`));
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("Shutting down recommendation worker gracefully...");
+  await worker.close();
+  await recommendationQueue.close();
+});

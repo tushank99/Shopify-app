@@ -1,9 +1,18 @@
 import { Queue, Worker } from "bullmq";
-import redis from "../config/redis.js"; // This is your verified cloud connection instance
+import redis from "../config/redis.js";
 import axios from "axios";
 
 export const orderQueue = new Queue("order-events", { 
-  connection: redis 
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 2000,
+    },
+    removeOnComplete: true,
+    removeOnFail: false,
+  }
 });
 
 const orderWorker = new Worker("order-events", async (job) => {
@@ -37,13 +46,21 @@ const orderWorker = new Worker("order-events", async (job) => {
     throw error;
   }
 }, { 
-  connection: redis 
+  connection: redis,
+  concurrency: 5, // Limit concurrent jobs to prevent connection pool exhaustion
 });
 
 orderWorker.on("completed", (job) => 
-  console.log(`Order Event Job ${job.id} processed successfully. `)
+  console.log(`✅ Order Event Job ${job.id} processed successfully.`)
 );
 
 orderWorker.on("failed", (job, err) => 
-  console.error(`Order Event Job ${job?.id} Failed: ${err.message}`)
+  console.error(`❌ Order Event Job ${job?.id} Failed: ${err.message}`)
 );
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("Shutting down order worker gracefully...");
+  await orderWorker.close();
+  await orderQueue.close();
+});
