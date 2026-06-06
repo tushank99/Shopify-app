@@ -13,6 +13,7 @@ import categoryRoutes from "./routes/categoryRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
+import { notFound, errorHandler } from "./middlewares/errorMiddleware.js";
 import "./queues/recommendationQueue.js";
 import "./queues/orderQueue.js";
 
@@ -70,6 +71,10 @@ app.get("/api/health", (req, res) => {
 });
 
 app.use("/uploads", express.static(path.join(__dirname + "/uploads")));
+
+// API error handling (must come after API routes, before the SPA catch-all)
+app.use("/api", notFound);
+app.use("/api", errorHandler);
 
 // Serve frontend in production
 if (process.env.NODE_ENV === "production") {
