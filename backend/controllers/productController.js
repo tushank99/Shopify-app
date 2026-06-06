@@ -196,14 +196,15 @@ const addProductReview = asyncHandler(async (req, res) => {
         product.reviews.length;
 
       await product.save();
-      //  Wipe the cache so recommendations update on the next homepage load
-      await redis.del(`recs:${req.user._id.toString()}`);
-      // Drops the job into Redis RAM instantly and moves on
-      await recommendationQueue.add(`update-user-${req.user._id}`, {
-        userId: req.user._id.toString()
+
+      // DISPATCH THE EVENT DIRECTLY TO THE EVENT BUFFER QUEUE
+      await recommendationQueue.add(`review-submitted-${req.user._id}-${product._id}`, {
+        userId: req.user._id.toString(),
+        productId: product._id.toString(),
+        rating: Number(rating)
       }, {
-        attempts: 3,             // If Python is busy, retry up to 3 times automatically
-        backoff: 5000            // Wait 5 seconds between retries
+        attempts: 3,
+        backoff: 5000
       });
 
       res.status(201).json({ message: "Review added successfully" });

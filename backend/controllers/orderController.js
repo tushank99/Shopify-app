@@ -1,5 +1,6 @@
 import Order from "../models/orderModel.js";
 import Product from "../models/productModel.js";
+import { orderQueue } from "../queues/orderQueue.js";
 
 // 1. Updated price calculation to remove all taxes and shipping fees
 function calcPrices(orderItems) {
@@ -71,6 +72,15 @@ const createOrder = async (req, res) => {
     });
 
     const createdOrder = await order.save();
+    // Drops the payload into Redis and instantly returns a response to the shopper
+    await orderQueue.add(`order-placed-${createdOrder._id}`, {
+      userId: req.user._id.toString(),
+      orderId: createdOrder._id.toString(),
+      items: dbOrderItems
+    }, {
+      attempts: 3,
+      backoff: 5000
+    });
     res.status(201).json(createdOrder);
   } catch (error) {
     res.status(500).json({ error: error.message });
