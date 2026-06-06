@@ -5,6 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "start": " cd backend && node index.js",
     "backend": "cd backend && nodemon index.js",
     "frontend": "cd frontend && npm run dev",
     "ml": "cd ml-backend && .\\.venv\\Scripts\\activate && python -m uvicorn main:app --port 8000 --reload",

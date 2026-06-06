@@ -350,7 +350,8 @@ const getRecommendations = asyncHandler(async (req, res) => {
 
     // 3. Dispatch recommendation request to Python ML sidecar
     console.log(`Dispatched recommendation request to ML sidecar for user: ${userId}`);
-    const response = await axios.get(`http://127.0.0.1:8000/recommend/${userId}`, { timeout: 1000 });
+    const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://127.0.0.1:8000";
+    const response = await axios.get(`${ML_SERVICE_URL}/recommend/${userId}`, { timeout: 1000 });
     const recommendedIds = response.data.recommendations;
 
     if (!recommendedIds || recommendedIds.length === 0) {

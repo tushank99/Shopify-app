@@ -26,12 +26,13 @@ const orderWorker = new Worker(
       await redis.del(`recs:${userId}`);
 
       // Ping the Python ML sidecar to adjust user-item collaborative feature weights
-      console.log(`📡 Sending purchase data vectors to Python ML backend for User: ${userId}`);
-      await axios.post(`http://127.0.0.1:8000/update-matrix`, {
+      console.log(`Sending purchase data vectors to Python ML backend for User: ${userId}`);
+      const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://127.0.0.1:8000";
+      await axios.post(`${ML_SERVICE_URL}/update-matrix`, {
         userId,
         productIds: purchasedProductIds,
         eventType: "PURCHASE"
-      }, { timeout: 3000 }).catch(e => console.log("⚠️ Python Sidecar matrix receiver endpoint not active yet. Skipping matrix update."));
+      }, { timeout: 3000 }).catch(e => console.log(" Python Sidecar matrix receiver endpoint not active yet. Skipping matrix update."));
 
       console.log(`Asynchronous post-purchase operations finalized for User: ${userId}`);
     } catch (error) {
@@ -42,4 +43,4 @@ const orderWorker = new Worker(
   { connection: redisConnection }
 );
 
-orderWorker.on("completed", (job) => console.log(`🎉 Order Event Job ${job.id} processed successfully.`));
+orderWorker.on("completed", (job) => console.log(`Order Event Job ${job.id} processed successfully.`));
