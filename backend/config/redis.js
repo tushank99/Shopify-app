@@ -3,24 +3,21 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+const url = process.env.REDIS_URL || "";
+
+const needsTls = url.startsWith("rediss://") || url.includes("upstash.io");
+
 // Shared connection options for ALL ioredis clients (standalone + BullMQ)
 export const redisConfig = {
   maxRetriesPerRequest: null, // REQUIRED by BullMQ
   enableReadyCheck: false,
-  tls:
-    process.env.REDIS_URL && process.env.REDIS_URL.startsWith("rediss://")
-      ? { rejectUnauthorized: false }
-      : undefined,
+  tls: needsTls ? { rejectUnauthorized: false } : undefined,
   connectTimeout: 10000,
+  // Back off on reconnect instead of hammering the server in a tight loop.
+  retryStrategy: (times) => Math.min(times * 200, 5000),
 };
 
-// Factory: builds a FULLY-configured connection (with the real target URL/host).
-// Each Queue/Worker must call this so it gets its OWN dedicated connection.
-// This fixes two problems:
-//   1. Queues/workers were getting a config object with NO host/url, so ioredis
-//      silently fell back to 127.0.0.1:6379 -> ECONNREFUSED loop on Railway.
-//   2. Sharing one socket across Queue + blocking Worker + cache caused the
-//      ECONNRESET cross-talk / reconnect loop on Upstash.
+
 export const createRedisConnection = () =>
   process.env.REDIS_URL
     ? new Redis(process.env.REDIS_URL, redisConfig)
