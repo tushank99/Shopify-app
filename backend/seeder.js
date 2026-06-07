@@ -789,7 +789,7 @@ const generateFakeReviews = (numReviews, avgRating, createdUsers) => {
 
 const seedDatabase = async () => {
   try {
-    await mongoose.connect("mongodb+srv://tushankr0020:Mongo123@cluster0.oehhe.mongodb.net/ecommerce?appName=Cluster0");
+    await mongoose.connect(process.env.MONGO_URI);
 
     console.log("MongoDB Connected");
 
