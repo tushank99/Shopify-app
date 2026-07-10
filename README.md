@@ -8,7 +8,7 @@
 <strong>event-driven microservices architecture</strong>.<br/><br/>
 
 The system decouples <strong>customer-facing APIs</strong> from computationally intensive
-<strong>SVD-based recommendation pipelines</strong> using asynchronous processing,<br/>
+<strong>SVD-based recommendation pipelines</strong> using asynchronous processing,
 enabling <strong>scalable, low-latency product services</strong> alongside
 <strong>personalized ML inference</strong>.
   </em>
