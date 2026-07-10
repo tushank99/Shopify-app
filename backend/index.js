@@ -28,6 +28,7 @@ const app = express();
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
+  "https://shopify-app-zy9p.onrender.com",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -41,6 +42,7 @@ const corsOptions = {
     }
   },
   credentials: true,
+  optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
