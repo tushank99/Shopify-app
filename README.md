@@ -1,15 +1,16 @@
-<p align="center">
-  <img src="thumb.png" alt="Shopify App Banner" width="100%" />
-</p>
 
-<h1 align="center">Distributed E-Commerce Engine with ML Recommendations</h1>
+
+<h1 align="center">Distributed Event-Driven Recommendation Platform</h1>
 
 <p align="center">
   <em>
-    A production-grade storefront that solves the core tension of modern e-commerce infrastructure:<br/>
-    serving <strong>sub-millisecond transactional product queries</strong> to shoppers while simultaneously running<br/>
-    <strong>heavy Singular Value Decomposition (SVD) matrix factorization computations</strong> to generate<br/>
-    personalized product recommendations — without one workload degrading the other.
+    A production-grade <strong>distributed recommendation platform</strong> built around an
+<strong>event-driven microservices architecture</strong>.<br/><br/>
+
+The system decouples <strong>customer-facing APIs</strong> from computationally intensive
+<strong>SVD-based recommendation pipelines</strong> using asynchronous processing,<br/>
+enabling <strong>scalable, low-latency product services</strong> alongside
+<strong>personalized ML inference</strong>.
   </em>
 </p>
 
