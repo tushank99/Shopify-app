@@ -1,12 +1,9 @@
-// packages
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-
-// Utiles
 import connectDB from "./config/db.js";
 import userRoutes from "./routes/userRoutes.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
@@ -20,17 +17,14 @@ import "./queues/orderQueue.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env file in development
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
 const port = process.env.PORT || 5000;
 
-// Connect to database
 connectDB();
 
 const app = express();
 
-// CORS configuration - allow frontend to access backend
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
@@ -39,18 +33,17 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(null, true); // Allow all origins for now - tighten in production
+      callback(new Error("Not allowed by CORS")); //  Now rejects unknown origins
     }
   },
   credentials: true,
 };
-app.use(cors(corsOptions));
 
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -65,34 +58,35 @@ app.get("/api/config/paypal", (req, res) => {
   res.send({ clientId: process.env.PAYPAL_CLIENT_ID });
 });
 
-// Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", message: "Server is running" });
 });
 
-// TEMPORARY DEBUG - Remove after fixing the products issue
 app.get("/api/debug-db", async (req, res) => {
   try {
     const mongoose = (await import("mongoose")).default;
     const db = mongoose.connection.db;
     const dbName = db.databaseName;
     const collections = await db.listCollections().toArray();
-    const collectionNames = collections.map(c => c.name);
+    const collectionNames = collections.map((c) => c.name);
     const productCount = await db.collection("products").countDocuments();
     const categoryCount = await db.collection("categories").countDocuments();
     const userCount = await db.collection("users").countDocuments();
-    
-    // Get one sample product to verify data
     const sampleProduct = await db.collection("products").findOne();
-    
+
     res.json({
       connectedDatabase: dbName,
-      mongoUri_masked: process.env.MONGO_URI
-        ? process.env.MONGO_URI.replace(/\/\/[^@]+@/, "//***:***@")
-        : "NOT SET",
+      
+      mongoUri_masked: process.env.MONGO_URI ? process.env.MONGO_URI.replace(/\/\/[^@]+@/, "//***:***@") : "NOT SET",
       collections: collectionNames,
-      counts: { products: productCount, categories: categoryCount, users: userCount },
-      sampleProduct: sampleProduct ? { name: sampleProduct.name, _id: sampleProduct._id } : null,
+      counts: {
+        products: productCount,
+        categories: categoryCount,
+        users: userCount,
+      },
+      sampleProduct: sampleProduct
+        ? { name: sampleProduct.name, _id: sampleProduct._id }
+        : null,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -101,25 +95,19 @@ app.get("/api/debug-db", async (req, res) => {
 
 app.use("/uploads", express.static(path.join(__dirname + "/uploads")));
 
-// API error handling (must come after API routes, before the SPA catch-all)
 app.use("/api", notFound);
 app.use("/api", errorHandler);
 
-// Serve frontend in production
 if (process.env.NODE_ENV === "production") {
   const frontendPath = path.join(__dirname, "../frontend/dist");
   app.use(express.static(frontendPath));
-  
-  // Handle React routing - serve index.html for all non-API routes
   app.get("*", (req, res) => {
     res.sendFile(path.join(frontendPath, "index.html"));
   });
 }
 
-// Only listen in non-serverless environment
 app.listen(port, "0.0.0.0", () => {
   console.log(`Node Backend listening on 0.0.0.0:${port}`);
 });
 
-// Export for Vercel serverless
 export default app;
