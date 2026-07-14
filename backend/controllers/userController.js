@@ -76,9 +76,9 @@ const logoutCurrentUser = asyncHandler(async (req, res) => {
     if (req.user?._id) {
       const cacheKey = `recs:${req.user._id.toString()}`;
       await redis.del(cacheKey);
-      console.log(`🧹 Cache Evicted: Successfully removed Redis cache key "${cacheKey}" for logging-out user.`);
+      console.log(` Cache Evicted: Successfully removed Redis cache key "${cacheKey}" for logging-out user.`);
     } else {
-      console.log("⚠️ Cache Eviction Skipped: req.user was not populated (Check if auth middleware is on this route).");
+      console.log("Cache Eviction Skipped: req.user was not populated (Check if auth middleware is on this route).");
     }
   } catch (cacheError) {
     console.error(`Redis Eviction Hook Failed: ${cacheError.message}`);

@@ -14,10 +14,11 @@ import {
 } from "../controllers/orderController.js";
 
 import { authenticate, authorizeAdmin } from "../middlewares/authMiddleware.js";
+import { rateLimiter } from '../middlewares/rateLimiterMiddleware.js';
 
 router
   .route("/")
-  .post(authenticate, createOrder)
+  .post(authenticate, rateLimiter(50, 10), createOrder)
   .get(authenticate, authorizeAdmin, getAllOrders);
 
 router.route("/mine").get(authenticate, getUserOrders);

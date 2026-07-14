@@ -13,6 +13,7 @@ import orderRoutes from "./routes/orderRoutes.js";
 import { notFound, errorHandler } from "./middlewares/errorMiddleware.js";
 import "./queues/recommendationQueue.js";
 import "./queues/orderQueue.js";
+import queueRoutes from "./routes/queueRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,7 +25,7 @@ const port = process.env.PORT || 5000;
 connectDB();
 
 const app = express();
-
+app.set('trust proxy', 1);
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
@@ -55,6 +56,7 @@ app.use("/api/category", categoryRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/queues", queueRoutes);
 
 app.get("/api/config/paypal", (req, res) => {
   res.send({ clientId: process.env.PAYPAL_CLIENT_ID });

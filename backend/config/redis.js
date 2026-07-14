@@ -30,7 +30,30 @@ export const createRedisConnection = () =>
 // Main standalone client for regular API cache get/set requests
 const redis = createRedisConnection();
 
-redis.on("connect", () => console.log("Main Redis Cache Client Connected!"));
-redis.on("error", (err) => console.error(" Main Redis Client Error:", err.message));
+const LUA_RESERVE_STOCK = `
+  local stock = redis.call('GET', KEYS[1])
+  if not stock then return -2 end
+  stock = tonumber(stock)
+  local requested = tonumber(ARGV[1])
+  if stock < requested then return -1 end
+  redis.call('DECRBY', KEYS[1], requested)
+  return stock - requested
+`;
 
+export let reserveStockSha = null;
+
+redis.on("connect", async () => {
+  console.log("Main Redis Cache Client Connected!");
+  try {
+    // Load script into Redis memory on boot and save the SHA
+    reserveStockSha = await redis.script("LOAD", LUA_RESERVE_STOCK);
+    console.log("Lua Reservation Script cached successfully.");
+  } catch (error) {
+    console.error("Failed to load Lua script:", error);
+  }
+});
+
+redis.on("error", (err) => console.error("Main Redis Client Error:", err.message));
+
+export const redisClient = redis;
 export default redis;

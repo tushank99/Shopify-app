@@ -14,12 +14,14 @@ const connectDB = async () => {
       return;
     }
     
+    
     const conn = await mongoose.connect(process.env.MONGO_URI);
+
     isConnected = conn.connections[0].readyState === 1;
     console.log(`Successfully connected to MongoDB 👍`);
   } catch (error) {
     console.error(`MongoDB connection error: ${error.message}`);
-    // Don't exit in production - serverless functions should handle this gracefully
+   
     if (process.env.NODE_ENV !== "production") {
       process.exit(1);
     }
