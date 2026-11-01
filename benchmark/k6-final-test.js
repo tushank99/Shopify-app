@@ -22,7 +22,10 @@ export const options = {
   },
 };
 
-const JWT_SECRET = 'abac12afsdkjladf'; 
+const JWT_SECRET =  __ENV.JWT_SECRET; 
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable is required");
+}
 
 const userPool = [];
 for (let i = 0; i < 100; i++) {

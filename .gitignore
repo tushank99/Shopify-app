@@ -11,3 +11,17 @@ __pycache__/
 
 # Local Environment Variables
 .env
+.env.*
+!.env.example
+
+# Runtime uploads
+uploads/
+
+# Logs
+*.log
+
+# Local-only notes
+technical-interview-notes.txt
+
+# Local/editor files
+.vscode/

@@ -12,7 +12,8 @@ import uploadRoutes from "./routes/uploadRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import { notFound, errorHandler } from "./middlewares/errorMiddleware.js";
 import "./queues/recommendationQueue.js";
-import "./queues/orderQueue.js";
+import "./queues/stockDecrementQueue.js";
+import "./queues/mlRecommendationQueue.js";
 import queueRoutes from "./routes/queueRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -64,37 +65,6 @@ app.get("/api/config/paypal", (req, res) => {
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", message: "Server is running" });
-});
-
-app.get("/api/debug-db", async (req, res) => {
-  try {
-    const mongoose = (await import("mongoose")).default;
-    const db = mongoose.connection.db;
-    const dbName = db.databaseName;
-    const collections = await db.listCollections().toArray();
-    const collectionNames = collections.map((c) => c.name);
-    const productCount = await db.collection("products").countDocuments();
-    const categoryCount = await db.collection("categories").countDocuments();
-    const userCount = await db.collection("users").countDocuments();
-    const sampleProduct = await db.collection("products").findOne();
-
-    res.json({
-      connectedDatabase: dbName,
-      
-      mongoUri_masked: process.env.MONGO_URI ? process.env.MONGO_URI.replace(/\/\/[^@]+@/, "//***:***@") : "NOT SET",
-      collections: collectionNames,
-      counts: {
-        products: productCount,
-        categories: categoryCount,
-        users: userCount,
-      },
-      sampleProduct: sampleProduct
-        ? { name: sampleProduct.name, _id: sampleProduct._id }
-        : null,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
 app.use("/uploads", express.static(path.join(__dirname + "/uploads")));
