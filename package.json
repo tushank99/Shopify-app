@@ -13,7 +13,10 @@
     "vercel-build": "pnpm --filter frontend install && pnpm --filter frontend build",
     "relay": "node backend/workers/outboxRelay.js",
     "test:outbox": "vitest run",
-    "test:outbox:watch": "vitest"
+    "test:outbox:watch": "vitest",
+    "drill:seed": "node benchmark/drill-seed.js",
+    "drills": "node scripts/drills/drills.mjs",
+    "dlt:redrive": "node scripts/dlt-redrive.mjs"
   },
   "keywords": [],
   "author": "HuXn WebDev",

@@ -125,7 +125,7 @@ public class OrderPlacedListener {
     /**
      * Terminal handler for order.placed-dlt. Never throws (FAIL_ON_ERROR would otherwise stop the container).
      * Logs the failure context and counts it. To replay after fixing the cause, see docs/OUTBOX_KAFKA.md
-     * (scripts/dlt-redrive.sh).
+     * (scripts/dlt-redrive.mjs).
      */
     @DltHandler
     public void onDeadLetter(ConsumerRecord<String, byte[]> record) {

@@ -248,6 +248,12 @@ async function processRow(row) {
     sendError = err;
   }
 
+  // Failure-drill hook (drill 7): die AFTER Kafka acknowledged the message but BEFORE the row is marked
+    // PUBLISHED. Only active when OUTBOX_CHAOS_KILL_AFTER_SEND=1; never set in production.
+  if (!sendError && process.env.OUTBOX_CHAOS_KILL_AFTER_SEND === "1") {
+    log("error", `[CHAOS] SIGKILL after send of ${row.eventId}, before markPublished`);
+    process.kill(process.pid, "SIGKILL");
+  }
   if (!sendError) {
     const ok = await markPublished(row);
     if (!ok) {

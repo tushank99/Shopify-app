@@ -1,34 +1,45 @@
 # Node Dependencies
-/node_modules
-/frontend/node_modules
+node_modules/
+frontend/node_modules/
 
-# Python Virtual Environments & Cache
-.venv/
-venv/
-ENV/
-__pycache__/
-*.pyc
-
-# Local Environment Variables
+# Environment / Secrets
 .env
 .env.*
 !.env.example
 
+# Python
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Java / Maven
-ledger-service/target/
+**/target/
 *.class
 *.jar
+
+# Benchmark / Drill Data
+benchmark/drill_data.json
+benchmark/drill-result.json
+benchmark/k6_json_data.json
+
+# Runtime
+uploads/
+*.log
+
+# IDE / Editor
+.vscode/
+.idea/
+*.iml
 .classpath
 .project
 .settings/
-# Runtime uploads
-uploads/
 
-# Logs
-*.log
+# OS
+.DS_Store
+Thumbs.db
 
-# Local-only notes
+# Local Files
 technical-interview-notes.txt
-
-# Local/editor files
-.vscode/

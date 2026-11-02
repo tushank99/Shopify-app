@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Vitest suite in backend/__tests__ (outbox claim/lease/fencing, order + outbox rollback together).
+  # Needs a MongoDB REPLICA SET for transactions, so it reuses the compose file instead of a plain service container.
+  node-outbox:
+    name: Node outbox tests (Vitest + MongoDB replica set)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MONGO_TEST_URI: mongodb://127.0.0.1:27017/?directConnection=true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start MongoDB replica set
+        run: |
+          docker compose -f docker-compose.infra.yml up -d --wait mongo
+          docker compose -f docker-compose.infra.yml run --rm mongo-init
+
+      - name: Run outbox tests
+        run: pnpm run test:outbox
+
+      - name: MongoDB logs (on failure)
+        if: failure()
+        run: docker compose -f docker-compose.infra.yml logs mongo
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.infra.yml down -v
+
+  # Spring Boot ledger: EmbeddedKafka (3 partitions) + Testcontainers Postgres. Docker is preinstalled on ubuntu-latest.
+  # The Maven build copies ../contracts/*.json into classpath:schemas/, so the whole repo must be checked out.
+  ledger-service:
+    name: Ledger service tests (Spring Boot + EmbeddedKafka + Testcontainers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ledger-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Build and test
+        run: mvn -B -ntp verify
+
+      - name: Upload surefire reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-service-surefire-reports
+          path: ledger-service/target/surefire-reports
+          if-no-files-found: ignore
