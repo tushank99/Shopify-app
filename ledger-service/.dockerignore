@@ -1,0 +1,5 @@
+# The build context is the whole repo root; send only what the image build needs.
+*
+!contracts
+!ledger-service
+ledger-service/target

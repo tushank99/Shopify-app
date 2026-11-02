@@ -176,7 +176,12 @@ const createOrder = async (req, res) => {
     enqueueResults.forEach((result, i) => {
       if (result.status === "rejected") {
         console.error(
-          `[CRITICAL]Order ${orderId}committed but ${enqueueLabels[i]}job was NOT enqueued: ${result.reason?.message}`
+          "[CRITICAL] Order",
+          orderId,
+          "committed but",
+          enqueueLabels[i],
+          "job was NOT enqueued:",
+          result.reason?.message
         );
       }
     });
@@ -192,7 +197,8 @@ const createOrder = async (req, res) => {
         await pipeline.exec();
       } catch (rollbackError) {
         console.error(
-          `[CRITICAL]Failed to restore Redis stock reservations: ${rollbackError.message}`,
+          "[CRITICAL] Failed to restore Redis stock reservations:",
+          rollbackError.message,
           reservedKeys
         );
       }
@@ -216,7 +222,7 @@ const createOrder = async (req, res) => {
     // NEW: an event that cannot be represented faithfully (bad price precision, contract violation)
     // aborts the whole transaction instead of silently writing a wrong ledger.
     if (error.message.startsWith("OutboxPayloadInvalid")) {
-      console.error(`[CRITICAL]Order aborted, outbox payload invalid: ${error.message}`);
+      console.error("[CRITICAL] Order aborted, outbox payload invalid:", error.message);
       return res.status(500).json({ error: "Order could not be recorded. Please contact support." });
     }
 

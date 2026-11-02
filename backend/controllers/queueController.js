@@ -39,12 +39,12 @@ export const retryFailedJobs = async (req, res) => {
     }
 
     res.status(200).json({
-      message: `Requeued ${requeuedCount}of ${foundCount}failed jobs.`,
+      message: ["Requeued", requeuedCount, "of", foundCount, "failed jobs."].join(" "),
       requeuedCount,
       breakdown,
     });
   } catch (error) {
-    console.error(`[Queue Admin Error]Failed to replay DLQ: ${error.message}`);
+    console.error("[Queue Admin Error] Failed to replay DLQ:", error.message);
     res.status(500).json({ error: "Server error while attempting to retry failed jobs." });
   }
 };
@@ -58,7 +58,7 @@ export const outboxStats = async (req, res) => {
     }
     res.status(200).json(stats);
   } catch (error) {
-    console.error(`[Queue Admin Error]Failed to read outbox stats: ${error.message}`);
+    console.error("[Queue Admin Error] Failed to read outbox stats:", error.message);
     res.status(500).json({ error: "Server error while reading outbox stats." });
   }
 };
@@ -72,7 +72,7 @@ export const requeueFailedOutbox = async (req, res) => {
     const requeued = await requeueFailed({ eventIds });
     res.status(200).json({ message: `Requeued ${requeued} FAILED outbox row(s).`, requeued });
   } catch (error) {
-    console.error(`[Queue Admin Error]Failed to requeue outbox rows: ${error.message}`);
+    console.error("[Queue Admin Error] Failed to requeue outbox rows:", error.message);
     res.status(500).json({ error: "Server error while requeueing outbox rows." });
   }
 };

@@ -9,5 +9,8 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 60_000,
     fileParallelism: false,
+    // The outbox write is gated on KAFKA_BROKERS (see backend/outbox/outboxConfig.js).
+    // Tests exercise the enabled path, so they must not depend on the developer's shell/.env.
+    env: { KAFKA_BROKERS: "localhost:9092", OUTBOX_ENABLED: "true" },
   },
 });

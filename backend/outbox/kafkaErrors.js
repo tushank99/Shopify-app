@@ -58,6 +58,27 @@ const CONNECTIVITY_NAMES =
   /^(KafkaJSConnectionError|KafkaJSConnectionClosedError|KafkaJSBrokerNotFound|KafkaJSRequestTimeoutError|KafkaJSTimeout|KafkaJSMetadataNotLoaded|SendTimeoutError)$/;
 const CONNECTIVITY_CODES = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH/;
 
+// KafkaJS also throws plain errors (name "KafkaJSError" or "Error") for a dead connection or producer.
+// They carry no .type/.code, so they are recognised by message. Without this they would be "unknown"
+// and burn attempts toward FAILED during a broker outage.
+const CONNECTIVITY_MESSAGES = new RegExp(
+  [
+    "producer is (?:disconnected|not connected)",
+    "closed connection",
+    "connection (?:error|timeout|closed|refused|lost)",
+    "socket (?:hang up|disconnected)",
+    "failed to connect",
+    "broker not found",
+    "no brokers? (?:available|found)",
+    "metadata not loaded",
+    "request timed out",
+  ].join("|"),
+  "i"
+);
+
+// The KafkaJS producer is unusable after this; the relay must rebuild it (its own "connected" flag is stale).
+const PRODUCER_DEAD_MESSAGES = /producer is (?:disconnected|not connected)/i;
+
 /** Walks .originalError / .cause so KafkaJSNumberOfRetriesExceeded wrappers are unwrapped. */
 function errorChain(err) {
   const chain = [];
@@ -83,13 +104,17 @@ export function classifyError(err) {
     if (e?.name && CONNECTIVITY_NAMES.test(e.name)) return "connectivity";
     if (e?.code && CONNECTIVITY_CODES.test(String(e.code))) return "connectivity";
     if (e?.message && CONNECTIVITY_CODES.test(String(e.message))) return "connectivity";
+    if (e?.message && CONNECTIVITY_MESSAGES.test(String(e.message))) return "connectivity";
   }
   return "unknown";
 }
 
 /** Types after which the (idempotent) producer should be rebuilt on recovery. */
 export function needsProducerRecycle(err) {
-  return errorChain(err).some((e) =>
-    ["OUT_OF_ORDER_SEQUENCE_NUMBER", "UNKNOWN_PRODUCER_ID", "INVALID_PRODUCER_EPOCH", "PRODUCER_FENCED"].includes(e?.type)
+  return errorChain(err).some(
+    (e) =>
+      ["OUT_OF_ORDER_SEQUENCE_NUMBER", "UNKNOWN_PRODUCER_ID", "INVALID_PRODUCER_EPOCH", "PRODUCER_FENCED"].includes(
+        e?.type
+      ) || PRODUCER_DEAD_MESSAGES.test(String(e?.message || ""))
   );
 }

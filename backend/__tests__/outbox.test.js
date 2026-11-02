@@ -60,13 +60,23 @@ function validOrderData(id = oid(), userId = oid()) {
 }
 
 beforeAll(async () => {
-  await mongoose.connect(MONGO_URI, { dbName: DB_NAME, serverSelectionTimeoutMS: 8_000 });
-  await Outbox.init(); // unique + claim indexes must exist before the tests rely on them
+  try {
+    await mongoose.connect(MONGO_URI, { dbName: DB_NAME, serverSelectionTimeoutMS: 15_000 });
+  } catch (err) {
+    const safeUri = MONGO_URI.replace(/\/\/[^@]*@/, "//***@");
+    throw new Error(
+      `Cannot reach a writable MongoDB replica set at ${safeUri}. ` +
+        `Run: docker compose -f docker-compose.infra.yml up -d mongo mongo-init (${err.message})`
+    );
+  }
+  await Outbox.init();
   await Order.init();
 });
 
 afterAll(async () => {
-  await mongoose.connection.dropDatabase();
+  if (mongoose.connection.readyState === 1) {
+    await mongoose.connection.dropDatabase();
+  }
   await mongoose.disconnect();
 });
 

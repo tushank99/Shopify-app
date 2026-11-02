@@ -14,6 +14,10 @@ __pycache__/
 .env.*
 !.env.example
 
+# Java / Maven
+ledger-service/target/
+*.class
+
 # Runtime uploads
 uploads/
 
