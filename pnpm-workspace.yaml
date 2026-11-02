@@ -2,6 +2,7 @@ allowBuilds:
   core-js: true
   esbuild: true
   msgpackr-extract: true
+  protobufjs: false
 packages:
   - 'backend'
   - 'frontend'
