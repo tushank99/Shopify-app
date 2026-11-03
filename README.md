@@ -10,7 +10,10 @@
 The system decouples <strong>customer-facing APIs</strong> from computationally intensive
 <strong>SVD-based recommendation pipelines</strong> using asynchronous processing,
 enabling <strong>scalable, low-latency product services</strong> alongside
-<strong>personalized ML inference</strong>.
+<strong>personalized ML inference</strong>.<br/><br/>
+
+Every checkout is also streamed through a <strong>transactional outbox</strong> and <strong>Apache Kafka</strong>
+into a <strong>Spring Boot + PostgreSQL ledger</strong>, with <strong>at-least-once delivery and idempotent ledger effects</strong>.
   </em>
 </p>
 
@@ -31,7 +34,8 @@ enabling <strong>scalable, low-latency product services</strong> alongside
 ## Table of Contents
 
 - [The Engineering Problem](#the-engineering-problem)
-- [Phased Evolution Strategy](#phased-evolution-strategy)
+- [Phased Evolution Strategy — The Order Event Pipeline](#phased-evolution-strategy--the-order-event-pipeline)
+- [Delivery Guarantees](#delivery-guarantees)
 - [System Architecture](#system-architecture)
 - [Core System Capabilities](#core-system-capabilities)
 - [Technical Deep Dives — The Debug Chronicles](#technical-deep-dives--the-debug-chronicles)
@@ -39,7 +43,6 @@ enabling <strong>scalable, low-latency product services</strong> alongside
 - [Getting Started](#getting-started)
 - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
-- [Future Scope & Scale Horizons](#future-scope--scale-horizons)
 
 ---
 
@@ -49,121 +52,197 @@ Every major e-commerce platform faces the same fundamental systems design challe
 
 If both workloads share the same execution thread and the same database connection pool, a single heavy recommendation recalculation can spike CPU for hundreds of milliseconds and block every other user's product page from loading.
 
-This project solves that tension by **decoupling** the two concerns into separate service boundaries connected via an asynchronous event bus, dedicated caching layers, and isolated connection pools — the same architectural pattern used at companies like Amazon and Netfilx to run ML inference alongside transactional APIs.
+This project solves that tension by **decoupling** the two concerns into separate service boundaries connected via an asynchronous event bus, dedicated caching layers, and isolated connection pools — the same architectural pattern used at companies like Amazon and Netflix to run ML inference alongside transactional APIs.
+
+### The second problem: the dual write
+
+An order must reach two systems: MongoDB (the order itself) and Kafka (the event other services consume). These two writes cannot be one atomic step:
+
+- Save the order, then crash before publishing → the order exists but the event is **lost**.
+- Publish first, then the order transaction fails → the event describes an order that **never existed**.
+
+The fix is a **transactional outbox**. The event is written as a row in the *same* MongoDB transaction as the order, so both commit or both roll back. A separate relay then moves outbox rows to Kafka. A crash can only cause a *re-send*, never a loss, and the consumer is built to absorb re-sends.
 
 ---
 
-## Phased Evolution Strategy
+## Phased Evolution Strategy — The Order Event Pipeline
 
-This platform was not built in a single pass. It was engineered iteratively across six deliberate optimization phases, each targeting a specific bottleneck:
+The order event pipeline was built in six phases. Each phase adds one layer and states the guarantee it provides.
 
-### Phase 1 → The Gateway Pattern (API Orchestration & BFF)
+```
+POST /api/orders ──► Mongo txn { orders + outboxes (PENDING) }
+                                   │
+                     outbox relay (lease + fencing token)
+                                   ▼
+                  Kafka  order.placed  (3 partitions, key = userId)
+                                   ▼
+              ledger-service (Spring Boot) ──► PostgreSQL ledger_entry / ledger_item
+                   │ transient failure                 │ invalid event
+                   ▼                                   ▼
+          order.placed-retry-0..4  ── exhausted ──►  order.placed-dlt  ──► dlt-redrive.mjs
+```
 
-**Goal:** Abstract all internal services behind a single Express.js Gateway, improving security, simplifying frontend integration, and reducing network round-trips.
+### Phase 1 → Infrastructure, Node Outbox & Relay
 
-**What was implemented:**
-- A Node.js Express server acts as the Backend-for-Frontend (BFF) layer, exposing a unified `/api/*` namespace to the React frontend
-- All internal routing — users, products, categories, orders, uploads — is consolidated into one entry point
-- JWT-based authentication via HTTP-only cookies is enforced at the gateway layer through `authMiddleware.js` before requests ever reach controllers
-- CORS policies whitelist specific frontend origins and allow credentialed cross-origin requests
+**Goal:** Make the order and its event one atomic unit, then deliver the event to Kafka without ever losing it.
 
+**What was built:**
+- **Local stack** in `docker-compose.infra.yml`: MongoDB as a single-node replica set (needed for transactions), Kafka in KRaft mode, PostgreSQL, Redis and Jaeger. Topics are pre-created by an init container and **broker auto-create is off**, so a typo in a topic name fails loudly instead of creating a silent new topic.
+- **Outbox write** (`backend/outbox/orderOutbox.js`): the order and its `order.placed` outbox row are saved in **one Mongo transaction** (`writeConcern: majority`). The `eventId` (UUID) is generated once, outside the transaction callback, so a transparent transaction retry can never produce two event IDs for one order.
+- **Exact money:** prices are converted to integer minor units before building the event (`backend/events/orderPlaced.js`), so `0.1 × 3` is exactly `0.30`. An event that cannot be represented faithfully aborts the order instead of writing a wrong ledger.
+- **Relay** (`backend/workers/outboxRelay.js`): a standalone process that claims one row at a time with `findOneAndUpdate` (atomic per document), a **lease** (`lockedAt`) and a **fencing token** (`lockToken`). Every later state change is conditional on that token (`backend/outbox/outboxStore.js`). Messages are published with `acks=-1`, keyed by `userId`, using the murmur2 partitioner so key → partition matches the Java client.
+- **Error classification** (`backend/outbox/kafkaErrors.js`): *connectivity* errors (broker down, missing leader, timeout) never count as attempts and pause claiming. *Permanent* errors (oversized or unserialisable record) go straight to `FAILED`. *Unknown* errors retry with exponential backoff plus jitter, and become `FAILED` after `OUTBOX_MAX_ATTEMPTS`.
+- **Operations:** `/healthz` and `/livez` on port 8085, a TTL index that removes `PUBLISHED` rows after 7 days, and admin endpoints for outbox stats and requeueing `FAILED` rows.
 
----
-
-### Phase 2 → Database Persistence Optimization (MongoDB Indexing)
-
-**Goal:** Move MongoDB from `O(n)` full collection scans to `O(log n)` index-based lookups, reducing database CPU consumption on every read.
-
-**What was implemented:**
-
-The `productModel.js` schema defines three targeted indexes that the MongoDB query planner now uses instead of scanning every document:
-
-| Index | Fields | Purpose |
-|-------|--------|---------|
-| **Compound B-Tree** | `{ category: 1, price: 1 }` | Enables efficient category + price range filtering without collection scans |
-| **Sort Index** | `{ createdAt: -1 }` | Eliminates in-memory sort overhead on "newest first" product listings |
-| **Weighted Text Index** | `{ name: "text", description: "text", brand: "text" }` with weights `{ name: 10, brand: 5, description: 1 }` | Powers native `$text` full-text search with relevance scoring — product name matches are ranked 10× higher than description matches |
-
-**The optimization pivot:** The `fetchProducts` controller originally used `$regex` for keyword searches, which cannot use indexes and forces a full collection scan on every keystroke. This was replaced with MongoDB's native `$text` operator, which offloads tokenization, stemming, and text filtering directly to Atlas cluster memory.
-
-An explicit `/api/products/explain-query` diagnostic endpoint was built to expose MongoDB's `executionStats` query planner output, verifying that the `IXSCAN` (index scan) stage is used instead of `COLLSCAN` (collection scan).
+**Why it matters:** a Kafka outage never blocks checkout. Orders keep returning `201`, rows wait as `PENDING`, and the relay drains them when the broker returns.
 
 ---
 
-### Phase 3 → The Speed Layer (Distributed Redis Caching)
+### Phase 2 → Ledger Service Foundation
 
-**Goal:** Bring read latencies down to sub-10ms for frequently accessed, computationally expensive recommendation datasets.
+**Goal:** A separate Java service that owns the financial record of every order, with correctness enforced by the database, not by application code.
 
-**What was implemented:**
-- An `ioredis` client connects to Redis (local in development, Upstash via `rediss://` TLS in production) as a dedicated in-memory cache layer
-- Personalized recommendation results are stored under `recs:{userId}` keys with a 24-hour TTL (`EX 86400`)
-- On cache hit, the recommendation endpoint returns instantly from Redis RAM without touching MongoDB or the Python ML sidecar
-- On cache miss, the system queries the Python SVD service, fetches matching product documents from MongoDB, and seeds the cache for subsequent requests
-- A **Redis Mutex Lock** pattern (`SET key "locked" EX 5 NX`) prevents cache stampede — when the cache expires, only the first concurrent request acquires the lock and performs the expensive recalculation; subsequent requests are served fallback data instead of all racing to rebuild the cache simultaneously
-- A dedicated `benchmark/cache-stampede-simulation.js` script fires 10 simultaneous requests to validate the stampede prevention mechanism
+**What was built:**
+- **Build** (`ledger-service/pom.xml`): Spring Boot 3.5 on Java 21. The Maven build copies the shared contract `contracts/order.placed.v1.schema.json` onto the classpath, so the Node producer and the Java consumer validate against **the same file**.
+- **Config** (`application.yml`): manual offset commits (`enable-auto-commit: false`), `auto-offset-reset: earliest`, raw `ByteArrayDeserializer` values, and a Hikari pool sized above listener concurrency.
+- **Schema** (Flyway `V1__init_ledger.sql`): `ledger_entry` and `ledger_item` with two independent guards, `NUMERIC(14,2)` money (never floating point), and `CHECK` constraints on ID lengths, currency, quantity and non-negative amounts.
+- **Entities & repositories:** JPA entities are read-only, and writes are native `INSERT … ON CONFLICT DO NOTHING`. Hibernate `ddl-auto` is `none`, so Flyway is the only owner of the schema.
+- **Dockerfile:** multi-stage build (Maven → JRE Alpine), runs as a non-root user, `MaxRAMPercentage=75`, and the OpenTelemetry Java agent is baked in.
 
----
-
-### Phase 4 → Decoupling via Event-Driven Architecture (EDA)
-
-**Goal:** Move slow, write-heavy, and computation-intensive processes out of the critical user request-response path.
-
-**What was implemented:**
-
-Two BullMQ queues backed by Redis handle asynchronous downstream processing:
-
-| Queue | Trigger | What the Worker Does |
-|-------|---------|---------------------|
-| `order-events` | A new order is placed | 1. Invalidates the user's cached recommendations (`redis.del(recs:{userId})`). 2. Sends a `POST /update-matrix` payload to the Python ML sidecar with purchased product IDs so the interaction matrix can be updated with implicit purchase signals (rating weight: 5.0). |
-| `recommendation-updates` | A product review is submitted | 1. Calls `GET /recommend/{userId}` on the Python SVD service. 2. Fetches the returned product IDs from MongoDB. 3. Writes the ordered recommendation array into Redis, hot-swapping the user's cached results. |
-
-Both queues are configured with exponential backoff retry policies (`attempts: 3`, `backoff: exponential/2000ms`) and `concurrency: 5` workers for parallel job processing. Workers use isolated Redis connections (via `createRedisConnection()`) to prevent socket collisions with the main cache client — the critical fix documented in the [TLS Socket Collision Case Study](#-technical-case-study-resolving-asynchronous-connection-hijacking--socket-collision-over-cloud-tls) below.
-
-The key design principle: **the shopper's checkout response (`201 Created`) is returned instantly after the order is persisted to MongoDB.** All downstream analytics — cache invalidation, ML matrix updates, recommendation recalculation — happen asynchronously via the BullMQ worker pool without blocking the client's HTTP thread.
+**Why it matters:** the database itself rejects a duplicate or malformed ledger row, even if a bug slips through the code.
 
 ---
 
-### Phase 5 → The Machine Learning Recommendation Core
+### Phase 3 → Event Validation, Idempotent Ingestion, Retry & DLT
 
-**Goal:** Build a recommendation pipeline that mirrors real-world production architectures — a separate Python microservice running SVD matrix factorization on user-product rating data.
+**Goal:** Consume every event exactly once *in effect*, isolate bad messages, and survive downstream outages.
 
-**What was implemented:**
+**What was built:**
+- **Validation from raw bytes** (`OrderPlacedEventValidator`): the payload is parsed and checked against the JSON Schema, and the line totals must add up to `totalPrice`. A generic JSON deserializer would silently turn `{"corrupt":true}` into an object full of nulls. Validating the raw tree rejects it immediately.
+- **Idempotent ingestion** (`LedgerService`): one transaction writes the entry and its lines. The result is `INSERTED`, `DUPLICATE_EVENT` or `DUPLICATE_ORDER`.
+- **Kafka listener with retry topics** (`OrderPlacedListener`): `@RetryableTopic` with 6 attempts → `order.placed-retry-0..4` with exponential backoff (2 s × 2, capped at 30 s, about 60 s in total) → `order.placed-dlt`. Invalid events are **excluded** from retries, so a poison pill never blocks a partition.
+- **Per-record commits** (`ack-mode: record`) and Micrometer counters: `ledger_events_ingested_total`, `ledger_events_duplicate_total{reason}`, `ledger_events_invalid_total{reason}` and `ledger_events_dlt_total`.
+- **DLT redrive** (`scripts/dlt-redrive.mjs`): replays dead-lettered events back to `order.placed` once the root cause is fixed.
 
-A FastAPI Python service (`ml-backend/main.py`) runs as an independent sidecar process:
-
-**Training Pipeline:**
-1. On startup, connects to MongoDB and executes a server-side aggregation pipeline that `$unwind`s the embedded `reviews` array across all products, projecting flat `{user, item, rating}` tuples
-2. Loads the flattened rating matrix into a Pandas DataFrame
-3. Trains a **Singular Value Decomposition (SVD)** model from the `surprise` library — projecting the sparse user-product interaction matrix into low-dimensional latent factor spaces where similar users and items cluster together
-4. Stores the trained model in memory (`GLOBAL_MODEL`) for instant inference
-
-**Cold-Start Gate:**
-A critical safeguard prevents the SVD engine from crashing on sparse data. If `len(ratings_data) < 5`, the model training is completely skipped to avoid null matrix decomposition errors. On the Node.js side, the recommendation controller independently checks if the user has any review history (`Product.findOne({ "reviews.user": userId })`). Users with zero interaction history are served a top-rated product fallback instead of empty recommendations.
-
-**Inference:**
-The `GET /recommend/{userId}` endpoint iterates over all product IDs, calls `model.predict(user_id, item_id)` to estimate the user's rating for each product, sorts by predicted score descending, and returns the top 10 product IDs.
-
-**Live Matrix Updates:**
-The `POST /update-matrix` endpoint accepts streaming purchase event payloads from the Node.js BullMQ order worker. Purchase events are injected into the in-memory DataFrame as high-confidence implicit ratings (score: 5.0), making them available for the next retraining cycle without requiring a full MongoDB re-extraction.
+**Why it matters:** one bad message or a database restart never stops the pipeline, and replaying events is always safe.
 
 ---
 
-### Phase 6 → Production MLOps, Pipelines & Monitoring
+### Phase 4 → REST API & Actuator
 
-**Goal:** Automate model lifecycle management with scheduled retraining — the same operational discipline professional ML engineers use in production.
+**Goal:** Read access to the ledger, plus production-style health and metrics endpoints.
 
-**What was implemented:**
+**What was built:**
+- `GET /api/ledger/orders/{orderId}`: returns the ledger entry with its lines. It returns `404` until the event has been consumed, because the pipeline is **eventually consistent**.
+- `GET /api/ledger/users/{userId}?page=&size=`: newest first, backed by the index `(user_id, order_created_at DESC, event_id DESC)` for stable pagination. `size` is capped at 100, and a user with no entries gets an empty `200` page.
+- Input checks: IDs must be 24-character hex, are matched case-insensitively and are stored lower-case. Errors go through a central `ApiExceptionHandler`.
+- **Actuator on a separate port (8081):** `/actuator/health` with liveness and readiness groups (readiness includes the database) and `/actuator/prometheus`. The API port is bound to loopback (`127.0.0.1:8090`) and the management port is not published.
 
-An **APScheduler** `BackgroundScheduler` daemon runs natively inside the FastAPI process:
+**Why it matters:** metrics and probes stay off the public port, and readiness reflects real database health.
 
-| Schedule | Rule | Behavior |
-|----------|------|----------|
-| **Production** | `cron` — daily at 3:00 AM | Full SVD matrix refactorization during off-peak hours, consuming the latest DataFrame (including all injected purchase/review events since the last training run) |
-| **Demo/Staging** | `interval` — every 2 minutes | Rapid retraining cycle for live demonstration and verification of the auto-retrain pipeline |
+---
 
-A manual override is also exposed via `POST /retrain` for on-demand model rebuilds during development and presentation.
+### Phase 5 → Tests & CI
 
-> ** Note on diagrams:** The architecture diagrams below show the *target vision* for this platform's evolution. Components such as Two-Tower Neural Networks, MLflow Model Registry, and Vector DB retrieval are part of the planned [Future Scope](#future-scope--scale-horizons) and are **not yet implemented** in the current codebase. Everything documented in the phases above reflects actual working code.
+**Goal:** Prove the guarantees with tests that run against real infrastructure, on every push.
+
+**What was built:**
+- **Node (Vitest, `backend/__tests__/`)** against a real MongoDB replica set:
+  - concurrent claims never return the same row
+  - expired leases are reclaimed, fresh ones are not
+  - a stale relay can never overwrite a reclaimed or published row
+  - connectivity errors never consume attempts
+  - order and outbox commit and roll back **together**
+  - money is exact for float-hostile prices
+- **Java (`LedgerIntegrationTest`)** with **EmbeddedKafka (3 partitions)** and **Testcontainers PostgreSQL**:
+  - the happy path writes entry and lines in one transaction
+  - a duplicate `eventId` is ignored
+  - the same event delivered concurrently creates exactly one row
+  - the same order under a new `eventId` is stopped by the second guard
+  - the three poison-pill types go straight to the DLT while the next order still processes
+- **GitHub Actions** (`.github/workflows/ci.yml`): two parallel jobs (Node + Java), `concurrency` cancels outdated runs, dependency caching is on, and surefire reports are uploaded when a run fails.
+
+**Why it matters:** the tricky cases (races, duplicates, poison pills) are tested, not just the happy path.
+
+---
+
+### Phase 6 → Load Testing, Failure Drills & OpenTelemetry
+
+**Goal:** Break the system on purpose and show that the guarantees hold, and make every order traceable end to end.
+
+**What was built:**
+- **k6 load** (`benchmark/k6-drill-orders.js`): places an exact number of orders spread across seeded users, and writes the counts that the drill runner reconciles against. `benchmark/k6-final-test.js` is a ramping stress test with a p95 checkout latency threshold.
+- **Failure drill runner** (`scripts/drills/drills.mjs`): 9 automated drills that kill, stop and duplicate parts of the system, then compare Mongo, Kafka, Postgres and metric deltas against a baseline. Results are written as a Markdown table. See [Delivery Guarantees](#delivery-guarantees).
+- **Distributed tracing:** Node uses the OpenTelemetry SDK (`backend/otel.js`, ESM loader hook) and Java uses the OTel agent, all exporting to Jaeger. The HTTP request's trace context is stored on the outbox row (`traceCarrier`) and restored by the relay, so **one trace** covers `POST /api/orders` → Mongo transaction → relay publish → Kafka → ledger consume → JDBC insert, even though the publish happens seconds later in another process.
+
+**Why it matters:** the reliability claims in this README are backed by drills you can re-run, not by assumption.
+
+---
+
+## Delivery Guarantees
+
+### Delivery model
+
+**At-least-once delivery with idempotent ledger effects.** Kafka may deliver an event more than once, and the ledger makes the second delivery a no-op. The result is an **exactly-once ledger effect per `(order_id, event_type)`**.
+
+### Two guards, two different protections
+
+| Guard | What it stops | Outcome |
+|-------|---------------|---------|
+| `event_id` **PRIMARY KEY** + `INSERT … ON CONFLICT DO NOTHING` | The **same event** redelivered, replayed or redriven | `DUPLICATE_EVENT`: no-op, offset committed |
+| `UNIQUE (order_id, event_type)` | The **same business order** arriving under a *different* `event_id` | `DUPLICATE_ORDER`: transaction rolled back, logged and counted |
+
+### Keys and ordering
+
+- Messages are keyed by **`userId`**, so all events for one user land on the same partition. The key only drives partitioning: the payload is authoritative, and a key/payload mismatch is logged, not failed.
+- **Ordering between events is not required.** Each `order.placed` event is self-contained and the ledger write is idempotent.
+- Retry topics *can* reorder events: a later order may be ledgered while an earlier one is still waiting in `retry-N`. This is safe by design, because no ledger row depends on another.
+
+### Failure classification
+
+| Case | Route |
+|------|-------|
+| Invalid JSON, schema violation, totals that don't add up | **Straight to `order.placed-dlt`**, no retries |
+| Transient failure (Postgres down, deadlock) | `order.placed-retry-0..4` with exponential backoff |
+| Duplicate event or duplicate order | **Successful no-op**: counted, offset committed |
+| Retries exhausted (about 60 s) | `order.placed-dlt` |
+
+### DLT redrive
+
+`scripts/dlt-redrive.mjs` republishes dead-lettered records to `order.placed`:
+- **The original key and value bytes are sent unchanged**, so the `event_id` is preserved and both guards still apply. Redriving twice is harmless.
+- **The original headers are kept** (`event-id`, `traceparent`, `content-type`), so the replayed event joins its original trace. Spring's `kafka_*` DLT headers are dropped, and a `redriven-from: <dlt>:<partition>:<offset>` header is added.
+- Poison pills are skipped by default, because replaying them only sends them back to the DLT. The options are `--dry-run`, `--since <epoch-ms>`, `--max <n>` and `--include-invalid`.
+
+### The outbox crash window
+
+This is the core of the at-least-once → exactly-once-effect story:
+
+1. The relay claims an outbox row and publishes the event to Kafka.
+2. The relay crashes **before** `markPublished`, so the row stays `PROCESSING`.
+3. The lease expires and another relay reclaims the row with a new fencing token.
+4. The event is **published again**: Kafka now holds two copies with the same `event_id`.
+5. The ledger inserts the first copy and treats the second as `DUPLICATE_EVENT`, leaving **one row**.
+
+If the first relay later wakes up, its `markPublished` matches nothing because its token is stale (see [the fencing deep dive](#why-the-relay-needs-a-fencing-token)).
+
+### Failure drills
+
+Run with `node scripts/drills/drills.mjs all`. Each drill checks deltas against a baseline, so clean volumes are not needed.
+
+| # | Drill | Pass criteria |
+|---|-------|---------------|
+| 1 | Volume: 100 orders | k6 `201` count = Mongo `PUBLISHED` rows = `ledger_entry` rows |
+| 2 | Crash recovery: `docker kill` the ledger mid-stream | Rebalance completes, `ledger_entry` ends exactly at the order count, 0 DLT records |
+| 3 | Duplicate replay: offsets shifted back 10 per partition | Duplicates ignored = events replayed, `ledger_entry` count unchanged |
+| 4 | Poison pills: invalid bytes + valid JSON with invalid schema | Both reach the DLT without retries, and later valid orders still process |
+| 5 | Broker outage: `docker stop kafka`, 20 orders | HTTP `201` throughout, the outbox drains to `PUBLISHED` after restart, 0 `FAILED` rows |
+| 6 | Two relays on one backlog | 100 distinct event IDs, no database errors |
+| 7 | Relay `kill -9` between send and mark | N + 1 messages on the topic, N distinct IDs, still one ledger row per order |
+| 8 | Postgres outage of 20 s (inside the retry window) | Retries absorb it, 0 DLT records, every order ledgered |
+| 8b | Postgres outage of 100 s (beyond the retry window) | Events reach the DLT, the redrive restores every ledger row, 0 `FAILED` rows |
+
+> **Note on diagrams:** The architecture diagrams below show the *target vision* for this platform's evolution. Components such as Two-Tower Neural Networks, MLflow Model Registry, and Vector DB retrieval are shown for direction and are **not part of the current codebase**. Everything documented in the phases above reflects actual working code.
 
 ---
 
@@ -196,7 +275,7 @@ The system is composed of three independently deployable services connected via 
 |----------|-------------|-------------|
 | **Online Serving** | `Request → API Gateway → Redis Cache Hit? → (Yes) Return instantly / (No) → FastAPI Inference → SVD Prediction → Rank & Filter → Save to Redis → Return` |  Fully implemented |
 | **Offline Pipeline** | `User Interactions → Data Engineering (MongoDB Aggregation) → SVD Model Training → Store in Memory → Scheduled Retraining via APScheduler` | SVD training & scheduled retraining implemented |
-| **Future Offline** | `Two-Tower Deep Model → Model Evaluation (Recall@K, NDCG) → MLflow Model Registry` |  Planned — see [Future Scope](#future-scope--scale-horizons) |
+| **Future Offline** | `Two-Tower Deep Model → Model Evaluation (Recall@K, NDCG) → MLflow Model Registry` |  Planned |
 
 ---
 
@@ -210,16 +289,48 @@ The system is composed of three independently deployable services connected via 
 <th width="70%">Implementation Detail</th>
 </tr>
 <tr>
+<td><strong>Transactional Outbox</strong></td>
+<td>The order and its <code>order.placed</code> event row commit in one MongoDB transaction (<code>w: majority</code>). There is no dual write, so an order and its event can never disagree.</td>
+</tr>
+<tr>
+<td><strong>Lease + Fencing Relay</strong></td>
+<td>Rows are claimed atomically with a lease and a per-claim <code>lockToken</code>. Any number of relays can run in parallel. A relay whose lease expired can no longer change the row, because every write is conditional on its token.</td>
+</tr>
+<tr>
+<td><strong>Idempotent Ledger</strong></td>
+<td>PostgreSQL enforces an exactly-once effect per <code>(order_id, event_type)</code> with two guards: the <code>event_id</code> primary key and a <code>UNIQUE (order_id, event_type)</code> constraint. Money is stored as <code>NUMERIC</code>, never as floating point.</td>
+</tr>
+<tr>
+<td><strong>Retry Topics, DLT & Redrive</strong></td>
+<td>Transient failures retry on <code>order.placed-retry-0..4</code> with exponential backoff without blocking the main partition. Invalid events skip retries and go to <code>order.placed-dlt</code>. A redrive script replays the DLT with the original bytes and trace headers.</td>
+</tr>
+<tr>
+<td><strong>Contract-First Events</strong></td>
+<td>One JSON Schema (<code>contracts/order.placed.v1.schema.json</code>) is enforced by the Node producer (AJV) and by the Java consumer. Amounts travel as decimal strings, and the consumer checks that line totals add up.</td>
+</tr>
+<tr>
+<td><strong>Distributed Tracing</strong></td>
+<td>OpenTelemetry in Node (SDK) and Java (agent), exported to Jaeger. The trace context is persisted on the outbox row, so one trace spans the HTTP request, the async relay and the Kafka consumer.</td>
+</tr>
+<tr>
 <td><strong>Backend-for-Frontend (BFF) Gateway</strong></td>
 <td>Node.js Express server acts as the single API surface. The React frontend only communicates with <code>/api/*</code> — it has zero knowledge of MongoDB, Redis, or the Python service. Internal service topology can be refactored without any frontend changes.</td>
 </tr>
 <tr>
 <td><strong>Event-Driven Asynchrony</strong></td>
-<td>BullMQ queues process checkout and review events instantly without blocking client HTTP threads. The order controller persists the order to MongoDB, drops a job into the Redis-backed queue, and returns <code>201 Created</code> — total client-facing latency is dominated only by the MongoDB write, not by downstream ML or cache operations.</td>
+<td>After the order commits, BullMQ jobs run the follow-up work off the request path: <code>stock-decrement</code> (idempotent per order via a unique <code>processedStockOrder</code> record), <code>ml-recommendation</code> (purchase signal to the ML service and cache invalidation) and <code>recommendation-updates</code> (review → cache hot-swap). Retries use exponential backoff (<code>attempts: 3</code>) and workers run with <code>concurrency: 5</code>.</td>
+</tr>
+<tr>
+<td><strong>Atomic Stock Reservation</strong></td>
+<td>A Redis Lua script checks and decrements stock in one atomic step, so two concurrent checkouts can never both take the last unit. Reservations are released if the order transaction fails.</td>
 </tr>
 <tr>
 <td><strong>Cache Stampede Prevention</strong></td>
 <td>Redis <code>SET NX</code> mutex locks ensure that when a hot cache key expires under high concurrency, only one request rebuilds the cache. Other concurrent requests receive a graceful fallback (top-rated products) instead of all hammering the Python sidecar simultaneously.</td>
+</tr>
+<tr>
+<td><strong>Sliding-Window Rate Limiting</strong></td>
+<td>Redis sorted-set rate limiter (per user, or per IP when anonymous) on order creation, executed as one <code>MULTI</code> block and designed to fail open if Redis is unreachable.</td>
 </tr>
 <tr>
 <td><strong>Connection Isolation</strong></td>
@@ -227,7 +338,7 @@ The system is composed of three independently deployable services connected via 
 </tr>
 <tr>
 <td><strong>Optimized Database Layer</strong></td>
-<td>Three MongoDB indexes (compound B-Tree, sort, weighted text) bring query patterns from <code>COLLSCAN</code> to <code>IXSCAN</code> — verified via the built-in <code>/explain-query</code> diagnostic endpoint.</td>
+<td>Three MongoDB indexes (compound <code>{category, price}</code>, sort <code>{createdAt: -1}</code>, weighted text on name/brand/description) bring query patterns from <code>COLLSCAN</code> to <code>IXSCAN</code> — verified via the built-in <code>/explain-query</code> diagnostic endpoint.</td>
 </tr>
 <tr>
 <td><strong>Image Pipeline</strong></td>
@@ -262,11 +373,11 @@ The system is composed of three independently deployable services connected via 
 </tr>
 <tr>
 <td><strong>Live Interaction Matrix Injection</strong></td>
-<td>Purchase events streamed via BullMQ are injected into the in-memory Pandas DataFrame as implicit high-confidence ratings (score 5.0). This ensures that the next scheduled retraining cycle incorporates recent purchase behavior without requiring a full MongoDB re-extraction.</td>
+<td>Purchase events streamed via BullMQ are injected into the in-memory Pandas DataFrame as implicit high-confidence ratings (score 5.0). Duplicate order events are ignored using a bounded set of processed order IDs. The next scheduled retraining cycle incorporates recent purchase behavior without requiring a full MongoDB re-extraction.</td>
 </tr>
 <tr>
 <td><strong>Automated Batch Retraining</strong></td>
-<td>APScheduler runs two concurrent schedules: a production cron job (daily at 3 AM) and a demo interval (every 2 minutes). Both trigger a full SVD <code>.fit()</code> on the current DataFrame, atomically swapping the global model reference.</td>
+<td>APScheduler runs two concurrent schedules: a production cron job (daily at 3 AM) and a demo interval (every 2 minutes). Both trigger a full SVD <code>.fit()</code> on the current DataFrame, atomically swapping the global model reference. A manual override is exposed via <code>POST /retrain</code>.</td>
 </tr>
 <tr>
 <td><strong>Prediction Serving</strong></td>
@@ -277,6 +388,28 @@ The system is composed of three independently deployable services connected via 
 ---
 
 ## Technical Deep Dives — The Debug Chronicles
+
+###  Why the relay needs a fencing token
+
+**The problem:** a lease alone is not enough. Picture relay A claiming a row, then pausing for longer than the lease (GC pause, network stall). Relay B sees an expired lease, reclaims the row and publishes it. Then A wakes up and runs its own `markPublished` or `markFailedAttempt`. Without protection, A overwrites B's result. It could even push an already-published row back to `PENDING`.
+
+**The fix:** every claim writes a fresh random `lockToken`. Every later transition only matches the row if the status is still `PROCESSING` **and** the token is still the one this relay wrote:
+
+```javascript
+// backend/outbox/outboxStore.js
+const fence = (row) => ({
+  _id: row._id,
+  status: OUTBOX_STATUS.PROCESSING,
+  lockToken: row.lockToken,
+});
+
+const res = await Outbox.updateOne(fence(row), { $set: { status: "PUBLISHED", publishedAt: now } });
+return res.modifiedCount === 1; // false => this relay lost the row; it does nothing
+```
+
+**Result:** a stale relay's write matches zero documents and is dropped. The worst case is a duplicate Kafka message, which the ledger already absorbs. This is covered by the Vitest suite ("a stale relay cannot overwrite a row that another relay re-claimed") and by drills 6 and 7.
+
+---
 
 ###  The Database Optimization Pivot
 
@@ -365,16 +498,16 @@ const redis = createRedisConnection();
 export default redis;
 ```
 
-By changing the instantiation inside `orderQueue.js` and `recommendationQueue.js` to ingest the **raw config factory** instead of the client pointer, each BullMQ worker daemon operates on its own dedicated TCP socket:
+By changing the instantiation inside every queue module (`stockDecrementQueue.js`, `mlRecommendationQueue.js`, `recommendationQueue.js`) to ingest the **raw config factory** instead of the client pointer, each BullMQ worker daemon operates on its own dedicated TCP socket:
 
 ```javascript
-// orderQueue.js — Isolated Connection Per Worker
+// stockDecrementQueue.js — Isolated Connection Per Queue and Worker
 
-export const orderQueue = new Queue("order-events", {
+export const stockDecrementQueue = new Queue("stock-decrement", {
   connection: createRedisConnection(),  // ← Dedicated socket
 });
 
-const orderWorker = new Worker("order-events", async (job) => {
+const stockWorker = new Worker("stock-decrement", async (job) => {
   // ... async processing
 }, {
   connection: createRedisConnection(),  // ← Another dedicated socket
@@ -382,40 +515,61 @@ const orderWorker = new Worker("order-events", async (job) => {
 });
 ```
 
-**Result:** Three isolated Redis connections now run in parallel — one for the main API cache, one for each BullMQ queue, and one for each worker — eliminating all cross-talk on the TLS channel. The 502 failures resolved immediately and the system maintained zero-downtime stability under high-concurrency load.
+**Result:** Isolated Redis connections now run in parallel — one for the main API cache, one for each BullMQ queue, and one for each worker — eliminating all cross-talk on the TLS channel. The 502 failures resolved immediately and the system maintained zero-downtime stability under high-concurrency load.
 
 ---
 
 ## Project Structure
 
 ```
-                 
-
+├── .github/workflows/
+│   └── ci.yml                    # CI: Node outbox tests + Java ledger tests in parallel
+│
+├── api/
+│   └── index.js                  # Vercel serverless entry: re-exports the Express app
+│
 ├── backend/
+│   ├── __tests__/
+│   │   ├── outbox.test.js        # Claim, lease, fencing, failure handling, atomic order + outbox, contract
+│   │   └── outboxConfig.test.js  # Outbox on/off gate (pure unit tests)
 │   ├── config/
 │   │   ├── db.js                 # MongoDB connection with reconnection guard
-│   │   └── redis.js              # Redis factory: config, createRedisConnection(), singleton client
+│   │   └── redis.js              # Redis factory + Lua stock-reservation script
 │   ├── controllers/
 │   │   ├── productController.js  # CRUD + text search + recommendations + mutex lock + explain query
-│   │   ├── orderController.js    # Order creation with async BullMQ dispatch
+│   │   ├── orderController.js    # Stock reservation → order + outbox transaction → BullMQ jobs
+│   │   ├── queueController.js    # DLQ replay, outbox stats, outbox requeue
 │   │   ├── userController.js     # Auth + cache eviction on logout
 │   │   └── categoryController.js # Category CRUD
+│   ├── events/
+│   │   └── orderPlaced.js        # Builds + validates the order.placed v1 event (exact minor-unit money)
 │   ├── middlewares/
 │   │   ├── authMiddleware.js     # JWT cookie verification + admin role gate
+│   │   ├── rateLimiterMiddleware.js # Redis sliding-window rate limiter
 │   │   ├── asyncHandler.js       # Express async error wrapper
 │   │   ├── checkId.js            # MongoDB ObjectId format validator
 │   │   └── errorMiddleware.js    # Global 404 & error response formatting
 │   ├── models/
 │   │   ├── productModel.js       # Product schema + review subdoc + 3 MongoDB indexes
 │   │   ├── orderModel.js         # Order schema with payment result tracking
+│   │   ├── outboxModel.js        # Outbox rows: claim indexes + TTL on PUBLISHED
+│   │   ├── processedStockOrderModel.js # Unique orderId → idempotent stock decrement
 │   │   ├── userModel.js          # User schema with admin flag
 │   │   └── categoryModel.js      # Category schema
+│   ├── outbox/
+│   │   ├── orderOutbox.js        # Saves order + outbox row in one transaction
+│   │   ├── outboxStore.js        # Claim / lease / fencing state transitions
+│   │   ├── outboxConfig.js       # Outbox on/off gate (KAFKA_BROKERS, OUTBOX_ENABLED)
+│   │   └── kafkaErrors.js        # connectivity / permanent / unknown error classification
 │   ├── queues/
-│   │   ├── orderQueue.js         # BullMQ queue + worker: purchase → ML matrix update
-│   │   └── recommendationQueue.js # BullMQ queue + worker: review → cache hot-swap
+│   │   ├── stockDecrementQueue.js    # BullMQ: idempotent MongoDB stock decrement
+│   │   ├── mlRecommendationQueue.js  # BullMQ: purchase → ML matrix update → cache invalidation
+│   │   ├── recommendationQueue.js    # BullMQ: review → cache hot-swap
+│   │   └── orderQueue.js             # BullMQ: legacy order-events queue
 │   ├── routes/
 │   │   ├── productRoutes.js      # Product API routes including /recommendations
 │   │   ├── orderRoutes.js        # Order API routes with admin-only listing
+│   │   ├── queueRoutes.js        # Admin queue + outbox routes
 │   │   ├── userRoutes.js         # User auth & profile routes
 │   │   ├── categoryRoutes.js     # Category admin routes
 │   │   └── uploadRoutes.js       # Cloudinary / local disk dual-mode image uploads
@@ -424,8 +578,33 @@ const orderWorker = new Worker("order-events", async (job) => {
 │   │   └── migrateImages.js      # Cloudinary migration script
 │   ├── utils/
 │   │   └── createToken.js        # JWT token generator + HTTP-only cookie setter
+│   ├── workers/
+│   │   └── outboxRelay.js        # Standalone relay: outbox → Kafka, /healthz on :8085
+│   ├── otel.js                   # OpenTelemetry bootstrap (ESM loader hook) for API + relay
 │   ├── seeder.js                 # Database seeder: 50+ products, 20 users, review generation
 │   └── index.js                  # Express app: CORS, routes, health checks, static serving
+│
+├── contracts/
+│   └── order.placed.v1.schema.json   # Shared event contract (Node producer + Java consumer)
+│
+├── ledger-service/
+│   ├── Dockerfile                # Multi-stage, non-root, OTel Java agent built in
+│   ├── Dockerfile.dockerignore   # Keeps the repo-root build context small
+│   ├── pom.xml                   # Spring Boot 3 / Java 21, copies contracts onto the classpath
+│   └── src/
+│       ├── main/java/com/shopify/ledger/
+│       │   ├── api/              # LedgerController, DTOs, ApiExceptionHandler
+│       │   ├── config/           # Kafka config (DLT template)
+│       │   ├── domain/           # LedgerEntry, LedgerItem (read-only JPA entities)
+│       │   ├── event/            # OrderPlacedEvent + schema validator
+│       │   ├── kafka/            # OrderPlacedListener: retry topics + DLT handler
+│       │   ├── repository/       # Native INSERT … ON CONFLICT + query repositories
+│       │   └── service/          # LedgerService (idempotent ingest), LedgerQueryService
+│       ├── main/resources/
+│       │   ├── application.yml   # Kafka, datasource, actuator on :8081, retry settings
+│       │   └── db/migration/V1__init_ledger.sql  # Ledger schema with both idempotency guards
+│       └── test/java/com/shopify/ledger/
+│           └── LedgerIntegrationTest.java  # EmbeddedKafka + Testcontainers Postgres
 │
 ├── ml-backend/
 │   ├── main.py                   # FastAPI: SVD training, /recommend, /update-matrix, APScheduler
@@ -459,15 +638,25 @@ const orderWorker = new Worker("order-events", async (job) => {
 │       └── components/           # Shared: Header, Loader, Modal, PrivateRoute, ProgressSteps
 │
 ├── benchmark/
-│   └── cache-stampede-simulation.js  # 10-concurrent-request stampede test
+│   ├── drill-seed.js             # Seeds drill users + JWTs + a high-stock product
+│   ├── k6-drill-orders.js        # k6: exact N orders over M users, writes counts for the drills
+│   ├── k6-final-test.js          # k6: ramping stress test with p95 latency threshold
+│   └── seed-users.js             # Signs JWTs for seeded users (load-test auth data)
+│
+├── scripts/
+│   ├── drills/drills.mjs         # 9 automated failure drills with a PASS/FAIL report
+│   └── dlt-redrive.mjs           # Replays order.placed-dlt back to order.placed
 │
 ├── docs/
+│   ├── OUTBOX_KAFKA.md           # Pipeline runbook: config, tracing, operations, drills
 │   ├── system-architecture-flow.png  # End-to-end system flow diagram
 │   └── offline-online-pipeline.png   # Offline vs online pipeline diagram
 │
+├── docker-compose.infra.yml      # Mongo rs0, Kafka (KRaft) + topics, Postgres, Redis, Jaeger, ledger
 ├── package.json                  # Monorepo root: Node.js dependencies + workspace scripts
 ├── pnpm-workspace.yaml           # PNPM workspace: backend + frontend packages
-                   
+├── vitest.config.js              # Vitest config for the outbox suite
+└── vercel.json                   # Vercel build + API rewrite
 ```
 
 ---
@@ -476,11 +665,12 @@ const orderWorker = new Worker("order-events", async (job) => {
 
 ### Prerequisites
 
-- **Node.js** ≥ 18
-- **pnpm** (or npm/yarn)
+- **Node.js** ≥ 20.6 (needed for the OpenTelemetry ESM loader hook)
+- **pnpm**
 - **Python** ≥ 3.9
-- **MongoDB** (Atlas or local)
-- **Redis** (local or Upstash cloud)
+- **Docker** with Docker Compose (MongoDB replica set, Kafka, PostgreSQL, Redis, Jaeger)
+- **Java 21** + Maven (only to build or test the ledger outside Docker)
+- **k6** (only for load tests and drills)
 
 ### 1. Clone & Install
 
@@ -488,12 +678,21 @@ const orderWorker = new Worker("order-events", async (job) => {
 git clone https://github.com/tushank99/Shopify-app.git
 cd Shopify-app
 
-# Install Node.js dependencies (monorepo root + frontend)
+# Installs the monorepo root, backend and frontend workspaces
 pnpm install
-cd frontend && npm install && cd ..
 ```
 
-### 2. Set Up the Python ML Service
+### 2. Start the Infrastructure
+
+```bash
+# MongoDB (replica set), Kafka + topics, PostgreSQL, Redis, Jaeger
+docker compose -f docker-compose.infra.yml up -d
+
+# Ledger service (Spring Boot) as a container
+docker compose -f docker-compose.infra.yml --profile app up -d --build ledger-service
+```
+
+### 3. Set Up the Python ML Service
 
 ```bash
 cd ml-backend
@@ -510,11 +709,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment Variables
+### 4. Configure Environment Variables
 
 Create a `.env` file in the project root (see [Environment Variables](#environment-variables) below).
 
-### 4. Seed the Database (Optional)
+### 5. Seed the Database (Optional)
 
 ```bash
 cd backend
@@ -523,18 +722,19 @@ node seeder.js
 
 This seeds 50+ products across 5 categories with 20 test users and realistic review distributions — providing enough rating data for the SVD model to train meaningfully.
 
-### 5. Start All Services
-
-Open three terminal windows:
+### 6. Start All Services
 
 ```bash
-# Terminal 1 — Node.js Backend
+# Terminal 1 — Node.js Backend (or: pnpm run backend:otel, with tracing)
 pnpm run backend
 
-# Terminal 2 — React Frontend
+# Terminal 2 — Outbox relay (or: pnpm run relay:otel, with tracing)
+pnpm run relay
+
+# Terminal 3 — React Frontend
 pnpm run frontend
 
-# Terminal 3 — Python ML Service
+# Terminal 4 — Python ML Service
 pnpm run ml
 ```
 
@@ -544,6 +744,29 @@ pnpm run ml
 | Node.js API Gateway | `http://localhost:5000` |
 | Python ML Service | `http://localhost:8000` |
 | ML Health Check | `http://localhost:8000/health` |
+| Outbox Relay Health | `http://localhost:8085/healthz` |
+| Ledger API | `http://127.0.0.1:8090/api/ledger` |
+| Jaeger UI (traces) | `http://localhost:16686` |
+
+### 7. Run the Tests
+
+```bash
+# Node outbox suite (needs the Mongo replica set from step 2)
+pnpm run test:outbox
+
+# Ledger service (EmbeddedKafka + Testcontainers, needs Docker)
+cd ledger-service && mvn -B verify
+```
+
+### 8. Run the Failure Drills
+
+```bash
+node scripts/drills/drills.mjs seed     # drill users, JWTs and a high-stock product
+node scripts/drills/drills.mjs all      # every drill, in order
+node scripts/drills/drills.mjs 5 7      # or pick drills by number / key
+```
+
+The runner starts and stops its own relays, so stop any relay you started in step 6 first. The full runbook is in [docs/OUTBOX_KAFKA.md](docs/OUTBOX_KAFKA.md).
 
 ---
 
@@ -556,8 +779,10 @@ Create a `.env` file in the project root:
 PORT=5000
 NODE_ENV=development
 
-# MongoDB
-MONGO_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/<dbname>
+# MongoDB — local replica set from docker-compose.infra.yml (transactions need a replica set)
+MONGO_URI=mongodb://127.0.0.1:27017/shopify?directConnection=true
+# MongoDB — Atlas
+# MONGO_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/<dbname>
 
 # Authentication
 JWT_SECRET=your_jwt_secret_key
@@ -573,6 +798,8 @@ CLOUDINARY_API_SECRET=your_api_secret
 # Redis — Local Development
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
+# Host port for the compose Redis, if 6379 is already taken
+# REDIS_HOST_PORT=6379
 
 # Redis — Production (Upstash)
 # REDIS_URL=rediss://default:password@endpoint.upstash.io:6379
@@ -582,7 +809,28 @@ REDIS_PORT=6379
 
 # Frontend URL (for CORS)
 # FRONTEND_URL=https://your-frontend.vercel.app
+
+# Kafka + outbox (the outbox is written only when KAFKA_BROKERS is set)
+KAFKA_BROKERS=localhost:9092
+# OUTBOX_ENABLED=true
+# OUTBOX_LEASE_MS=30000          # claim lease
+# OUTBOX_SEND_TIMEOUT_MS=8000    # must satisfy sendTimeout * 3 <= lease
+# OUTBOX_BATCH_SIZE=100
+# OUTBOX_IDLE_SLEEP_MS=300
+# OUTBOX_MAX_ATTEMPTS=5          # only unknown errors count; broker outages never do
+# OUTBOX_HEALTH_PORT=8085
+
+# Ledger database (used by docker-compose.infra.yml)
+# LEDGER_DB_USER=ledger
+# LEDGER_DB_PASSWORD=ledger_pw
+
+# OpenTelemetry
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# OTEL_SDK_DISABLED=false
+# LEDGER_OTEL_ENABLED=true       # Java agent switch in compose
 ```
+
+The full relay and tracing tables are in [docs/OUTBOX_KAFKA.md §2](docs/OUTBOX_KAFKA.md#2-configuration).
 
 ---
 
@@ -618,10 +866,32 @@ REDIS_PORT=6379
 
 | Method | Endpoint | Access | Description |
 |--------|----------|--------|-------------|
-| `POST` | `/api/orders` | Private | Create order → triggers async BullMQ order event |
+| `POST` | `/api/orders` | Private | Create order: stock reservation + order and outbox row in one transaction + BullMQ jobs (rate limited) |
 | `GET` | `/api/orders/mine` | Private | Get current user's orders |
 | `GET` | `/api/orders/:id` | Private | Get order by ID |
+| `PUT` | `/api/orders/:id/pay` | Private | Mark order as paid |
+| `PUT` | `/api/orders/:id/deliver` | Admin | Mark order as delivered |
 | `GET` | `/api/orders` | Admin | List all orders |
+| `GET` | `/api/orders/total-orders` | Public | Total order count |
+| `GET` | `/api/orders/total-sales` | Public | Total sales |
+| `GET` | `/api/orders/total-sales-by-date` | Public | Paid sales grouped by day |
+
+### Queues & Outbox (Admin)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/queues/retry-failed` | Retry failed BullMQ jobs across all queues |
+| `GET` | `/api/queues/outbox/stats` | Outbox counts by status, oldest pending age, last failure |
+| `POST` | `/api/queues/outbox/requeue-failed` | Move `FAILED` outbox rows back to `PENDING` (optional `{ "eventIds": [...] }`) |
+
+### Ledger Service (Spring Boot)
+
+| Method | Endpoint | Port | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/ledger/orders/{orderId}` | 8090 → 8080 | Ledger entry + lines for one order (`404` until consumed) |
+| `GET` | `/api/ledger/users/{userId}?page=0&size=20` | 8090 → 8080 | Paginated ledger for a user, newest first (`size` ≤ 100) |
+| `GET` | `/actuator/health` (`/liveness`, `/readiness`) | 8081 | Health probes; readiness includes the database |
+| `GET` | `/actuator/prometheus` | 8081 | Metrics, including `ledger_events_*` counters |
 
 ### ML Service (Python — Internal)
 
@@ -631,27 +901,6 @@ REDIS_PORT=6379
 | `GET` | `/recommend/{user_id}` | Get top-10 SVD-predicted product IDs |
 | `POST` | `/update-matrix` | Inject purchase events into interaction DataFrame |
 | `POST` | `/retrain` | Manual override: force SVD model rebuild |
-
----
-
-## Future Scope & Scale Horizons
-
-These are the next engineering milestones planned for this platform — they represent genuine architectural evolutions, not features that currently exist in the codebase:
-
-### 1. Real-Time Streaming Pipeline
-Replace the background APScheduler cron daemon with a **streaming data broker** like Apache Kafka or AWS Kinesis to feed real-time user clickstream events (page views, add-to-cart, wishlist interactions) directly into the ML sidecar. This would transition the system from periodic batch retraining to continuous online learning.
-
-### 2. Advanced Embedding Retrievals
-Migrate from standard SVD matrix arrays to an explicit **Two-Tower Neural Network** architecture or a dedicated **Vector Database** (like Milvus or Pinecone) for approximate nearest neighbor (ANN) lookups. As the catalog scales to millions of items, iterating over every product ID for predictions becomes infeasible — ANN indexes enable sub-millisecond retrieval over billion-scale embedding spaces.
-
-### 3. Rigorous MLOps Tracking
-Integrate an **MLflow Model Registry** to track model training metrics (Precision@K, Recall@K, NDCG) continuously against production deployment baselines. Each retraining cycle would produce a versioned model artifact with associated evaluation metrics, enabling automated rollback if a new model degrades recommendation quality.
-
-### 4. A/B Testing Framework
-Implement a feature-flagged recommendation serving layer that can route a percentage of traffic to a challenger model while the champion model serves the majority. This allows quantitative comparison of different algorithms (e.g., SVD vs. neural collaborative filtering) on live user engagement metrics.
-
-### 5. Content-Based Hybrid Filtering
-Augment the current collaborative filtering (SVD) with content-based signals — product descriptions encoded via TF-IDF or sentence transformers. A hybrid approach handles the cold-start problem more gracefully for new products that have zero reviews but rich text descriptions.
 
 ---
 

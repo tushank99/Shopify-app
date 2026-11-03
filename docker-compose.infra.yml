@@ -6,6 +6,7 @@
 # Host connection strings:
 #   MONGO_URI   = mongodb://127.0.0.1:27017/shopify?directConnection=true
 #   KAFKA_BROKERS = localhost:9092
+#   REDIS_URL     = redis://127.0.0.1:6379
 #
 # NOTE: retry-topic names below MUST match LEDGER_RETRY_ATTEMPTS (default 6 => retry-0..retry-4).
 
@@ -50,6 +51,22 @@ services:
           if (!db.hello().isWritablePrimary) { print("node never became primary"); quit(1); }
           print("replica set ready (primary elected)");
         '
+
+  redis:
+    image: redis:7-alpine
+    # BullMQ requires noeviction, and AOF keeps queued jobs and stock reservations across restarts.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      # Loopback only: this local instance has no password.
+      # If 6379 is taken, set REDIS_HOST_PORT in .env and use the same port in REDIS_URL and REDIS_PORT.
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   kafka:
     image: apache/kafka:3.8.0
@@ -150,5 +167,6 @@ services:
 
 volumes:
   mongo_data:
+  redis_data:
   kafka_data:
   pg_data:
