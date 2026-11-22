@@ -525,9 +525,6 @@ const stockWorker = new Worker("stock-decrement", async (job) => {
 ├── .github/workflows/
 │   └── ci.yml                    # CI: Node outbox tests + Java ledger tests in parallel
 │
-├── api/
-│   └── index.js                  # Vercel serverless entry: re-exports the Express app
-│
 ├── backend/
 │   ├── __tests__/
 │   │   ├── outbox.test.js        # Claim, lease, fencing, failure handling, atomic order + outbox, contract
@@ -656,7 +653,6 @@ const stockWorker = new Worker("stock-decrement", async (job) => {
 ├── package.json                  # Monorepo root: Node.js dependencies + workspace scripts
 ├── pnpm-workspace.yaml           # PNPM workspace: backend + frontend packages
 ├── vitest.config.js              # Vitest config for the outbox suite
-└── vercel.json                   # Vercel build + API rewrite
 ```
 
 ---

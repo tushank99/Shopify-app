@@ -21,6 +21,8 @@
   <properties>
     <java.version>21</java.version>
     <json-schema-validator.version>1.5.1</json-schema-validator.version>
+    <!-- 1.21.0 (Boot 3.5.0 default) cannot talk to Docker 29+ (API 1.32 rejected); 1.21.4 fixes it -->
+    <testcontainers.version>1.21.4</testcontainers.version>
   </properties>
 
   <dependencies>
