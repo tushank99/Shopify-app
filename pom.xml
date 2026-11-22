@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Aggregator + shared dependency management for the whole backend platform.
+      ledger-service  : Kafka -> Postgres ledger (standalone: keeps its own Spring Boot parent so its Dockerfile/CI are unchanged)
+      erp-*           : order-to-cash + inventory + purchasing on MySQL (inherit from this POM)
+    Build everything:   mvn -B package -DskipTests
+    Build only the ERP: mvn -B -pl erp-app -am package -DskipTests
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.0</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.shopify</groupId>
+  <artifactId>commerce-platform</artifactId>
+  <version>0.1.0</version>
+  <packaging>pom</packaging>
+  <name>commerce-platform</name>
+
+  <modules>
+    <module>ledger-service</module>
+    <module>erp-common</module>
+    <module>erp-inventory</module>
+    <module>erp-purchasing</module>
+    <module>erp-orders</module>
+    <module>erp-app</module>
+  </modules>
+
+  <properties>
+    <java.version>21</java.version>
+    <springdoc.version>2.8.9</springdoc.version>
+    <swagger-annotations.version>2.2.30</swagger-annotations.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.shopify</groupId>
+        <artifactId>erp-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.shopify</groupId>
+        <artifactId>erp-inventory</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.shopify</groupId>
+        <artifactId>erp-purchasing</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.shopify</groupId>
+        <artifactId>erp-orders</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springdoc</groupId>
+        <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        <version>${springdoc.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.swagger.core.v3</groupId>
+        <artifactId>swagger-annotations-jakarta</artifactId>
+        <version>${swagger-annotations.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>

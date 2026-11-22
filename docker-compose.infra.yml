@@ -131,6 +131,25 @@ services:
       timeout: 5s
       retries: 20
 
+  mysql:
+    image: mysql:8.4
+    ports:
+      # 3307 on the host so it never clashes with a MySQL you already run locally.
+      - "127.0.0.1:3307:3306"
+    environment:
+      MYSQL_DATABASE: erp_db
+      MYSQL_USER: ${ERP_DB_USER:-erp}
+      MYSQL_PASSWORD: ${ERP_DB_PASSWORD:-erp_pw}
+      MYSQL_ROOT_PASSWORD: ${ERP_DB_ROOT_PASSWORD:-erp_root_pw}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
   jaeger:
     image: jaegertracing/all-in-one:1.60
     environment:
@@ -165,8 +184,30 @@ services:
       # The management port (8081) is intentionally NOT published.
       - "127.0.0.1:8090:8080"
 
+  # Optional: ERP order-to-cash service (inventory, purchase orders, order saga) on MySQL.
+  erp-service:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: erp-app/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      ERP_DB_URL: jdbc:mysql://mysql:3306/erp_db
+      ERP_DB_USER: ${ERP_DB_USER:-erp}
+      ERP_DB_PASSWORD: ${ERP_DB_PASSWORD:-erp_pw}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ERP_SIMULATE_FAILURE_AT: ${ERP_SIMULATE_FAILURE_AT:-NONE}
+    ports:
+      # Loopback only: the ERP API has no authentication yet.
+      - "127.0.0.1:8095:8095"
+
 volumes:
   mongo_data:
   redis_data:
   kafka_data:
   pg_data:
+  mysql_data:

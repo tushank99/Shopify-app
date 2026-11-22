@@ -893,6 +893,20 @@ The full relay and tracing tables are in [docs/OUTBOX_KAFKA.md §2](docs/OUTBOX_
 | `GET` | `/actuator/health` (`/liveness`, `/readiness`) | 8081 | Health probes; readiness includes the database |
 | `GET` | `/actuator/prometheus` | 8081 | Metrics, including `ledger_events_*` counters |
 
+### ERP Service (Spring Boot + MySQL): order-to-cash, inventory, purchasing
+
+Design notes, saga diagram and known limits: [docs/erp-order-to-cash.md](docs/erp-order-to-cash.md) · user stories: [docs/user-stories.md](docs/user-stories.md) · test plan: [docs/test-plan.md](docs/test-plan.md) · Swagger UI: `http://localhost:8095/swagger-ui.html`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/inventory/items` | Create a SKU with opening stock and reorder rules |
+| `GET` | `/api/inventory/items`, `/items/{sku}` | On-hand / reserved / available per SKU |
+| `GET` | `/api/inventory/low-stock` | SKUs at or below their reorder point |
+| `POST` | `/api/orders` | Place an order: reserve stock → post to ledger → ship, compensate on failure (`Idempotency-Key` supported) |
+| `GET` | `/api/orders/{id}`, `/api/orders/{id}/saga` | Order status and the saga audit trail |
+| `POST` | `/api/purchase-orders`, `/reorder-suggestions` | Create a draft PO, or one for all low-stock items |
+| `POST` | `/api/purchase-orders/{id}/approve \| receive \| cancel` | PO lifecycle; receiving adds stock |
+
 ### ML Service (Python — Internal)
 
 | Method | Endpoint | Description |
