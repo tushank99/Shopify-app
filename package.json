@@ -10,7 +10,6 @@
     "frontend": "cd frontend && npm run dev",
     "ml": "cd ml-backend && .\\.venv\\Scripts\\activate && python -m uvicorn main:app --port 8000 --reload",
     "build": "pnpm --filter frontend install && pnpm --filter frontend build",
-    "vercel-build": "pnpm --filter frontend install && pnpm --filter frontend build",
     "relay": "node backend/workers/outboxRelay.js",
     "start:otel": "cd backend && node --import ./otel.js index.js",
     "backend:otel": "cd backend && nodemon --exec \"node --import ./otel.js\" index.js",

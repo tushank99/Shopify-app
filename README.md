@@ -525,9 +525,6 @@ const stockWorker = new Worker("stock-decrement", async (job) => {
 ├── .github/workflows/
 │   └── ci.yml                    # CI: Node outbox tests + Java ledger tests in parallel
 │
-├── api/
-│   └── index.js                  # Vercel serverless entry: re-exports the Express app
-│
 ├── backend/
 │   ├── __tests__/
 │   │   ├── outbox.test.js        # Claim, lease, fencing, failure handling, atomic order + outbox, contract
@@ -656,7 +653,6 @@ const stockWorker = new Worker("stock-decrement", async (job) => {
 ├── package.json                  # Monorepo root: Node.js dependencies + workspace scripts
 ├── pnpm-workspace.yaml           # PNPM workspace: backend + frontend packages
 ├── vitest.config.js              # Vitest config for the outbox suite
-└── vercel.json                   # Vercel build + API rewrite
 ```
 
 ---
@@ -892,6 +888,20 @@ The full relay and tracing tables are in [docs/OUTBOX_KAFKA.md §2](docs/OUTBOX_
 | `GET` | `/api/ledger/users/{userId}?page=0&size=20` | 8090 → 8080 | Paginated ledger for a user, newest first (`size` ≤ 100) |
 | `GET` | `/actuator/health` (`/liveness`, `/readiness`) | 8081 | Health probes; readiness includes the database |
 | `GET` | `/actuator/prometheus` | 8081 | Metrics, including `ledger_events_*` counters |
+
+### ERP Service (Spring Boot + MySQL): order-to-cash, inventory, purchasing
+
+Design notes, saga diagram and known limits: [docs/erp-order-to-cash.md](docs/erp-order-to-cash.md) · user stories: [docs/user-stories.md](docs/user-stories.md) · test plan: [docs/test-plan.md](docs/test-plan.md) · Swagger UI: `http://localhost:8095/swagger-ui.html`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/inventory/items` | Create a SKU with opening stock and reorder rules |
+| `GET` | `/api/inventory/items`, `/items/{sku}` | On-hand / reserved / available per SKU |
+| `GET` | `/api/inventory/low-stock` | SKUs at or below their reorder point |
+| `POST` | `/api/orders` | Place an order: reserve stock → post to ledger → ship, compensate on failure (`Idempotency-Key` supported) |
+| `GET` | `/api/orders/{id}`, `/api/orders/{id}/saga` | Order status and the saga audit trail |
+| `POST` | `/api/purchase-orders`, `/reorder-suggestions` | Create a draft PO, or one for all low-stock items |
+| `POST` | `/api/purchase-orders/{id}/approve \| receive \| cancel` | PO lifecycle; receiving adds stock |
 
 ### ML Service (Python — Internal)
 

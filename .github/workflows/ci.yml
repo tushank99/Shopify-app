@@ -81,3 +81,21 @@ jobs:
           name: ledger-service-surefire-reports
           path: ledger-service/target/surefire-reports
           if-no-files-found: ignore
+
+  # ERP multi-module build (inventory, purchasing, orders, app). Compile + package only: automated ERP tests are
+  # still "Planned" in docs/test-plan.md. The root pom lists ledger-service as a module, so the whole repo is checked out.
+  erp-build:
+    name: ERP modules build (Maven)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Build erp-app and the modules it depends on
+        run: mvn -B -ntp -pl erp-app -am -DskipTests package

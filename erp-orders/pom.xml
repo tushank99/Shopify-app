@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.shopify</groupId>
+    <artifactId>commerce-platform</artifactId>
+    <version>0.1.0</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+  <artifactId>erp-orders</artifactId>
+  <name>erp-orders</name>
+  <description>Sales orders and the order-to-cash saga (reserve, post to ledger, ship, compensate)</description>
+  <dependencies>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+    <dependency><groupId>io.swagger.core.v3</groupId><artifactId>swagger-annotations-jakarta</artifactId></dependency>
+    <dependency><groupId>com.shopify</groupId><artifactId>erp-common</artifactId></dependency>
+    <dependency><groupId>com.shopify</groupId><artifactId>erp-inventory</artifactId></dependency>
+    <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-kafka</artifactId></dependency>
+  </dependencies>
+
+</project>

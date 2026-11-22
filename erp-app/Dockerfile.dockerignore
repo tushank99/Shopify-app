@@ -1,0 +1,11 @@
+# The build context is the whole repo root; send only what the ERP image build needs.
+*
+!pom.xml
+!contracts
+!ledger-service/pom.xml
+!erp-common
+!erp-inventory
+!erp-purchasing
+!erp-orders
+!erp-app
+**/target

@@ -43,3 +43,12 @@ Thumbs.db
 
 # Local Files
 technical-interview-notes.txt
+# Java / Maven extras
+dependency-reduced-pom.xml
+hs_err_pid*
+replay_pid*
+.factorypath
+.mvn/wrapper/maven-wrapper.jar
+*.iws
+.apt_generated/
+.sts4-cache/
