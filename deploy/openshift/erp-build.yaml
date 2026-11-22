@@ -1,0 +1,37 @@
+# Builds the ERP image inside the cluster from the GitHub repo, using erp-app/Dockerfile (context = repo root).
+# Output goes to the "erp-service" ImageStream in the internal registry; no external registry or credentials needed.
+#   oc start-build erp-service --follow
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: erp-service
+  labels: { app: erp-service, part-of: erp }
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: erp-service
+  labels: { app: erp-service, part-of: erp }
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/tushank99/Shopify-app.git
+      ref: main
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: erp-app/Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: erp-service:latest
+  resources:
+    # the Maven stage needs more than the namespace default
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: "2", memory: 2Gi }
+  runPolicy: Serial
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+  triggers:
+    - type: ConfigChange

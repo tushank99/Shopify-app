@@ -48,7 +48,13 @@ management:
   endpoint:
     health:
       probes:
+        # /actuator/health/liveness and /actuator/health/readiness (used by the OpenShift probes)
         enabled: true
+      group:
+        # not ready while MySQL is unreachable -> pod drops out of the Service, but is NOT restarted
+        # (liveness stays app-only, so a database outage never causes a restart storm)
+        readiness:
+          include: readinessState,db
 
 erp:
   currency: INR
@@ -56,7 +62,8 @@ erp:
     # NONE | POST_LEDGER | SHIP : force a failure at that step to see the compensation path (demo only)
     simulate-failure-at: ${ERP_SIMULATE_FAILURE_AT:NONE}
   outbox:
-    enabled: true
+    # false = no Kafka needed (e.g. the OpenShift sandbox); events stay PENDING in outbox_event
+    enabled: ${ERP_OUTBOX_ENABLED:true}
     poll-ms: 1000
     batch-size: 50
     max-attempts: 20

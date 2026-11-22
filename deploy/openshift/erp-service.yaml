@@ -1,0 +1,96 @@
+# ERP service: ConfigMap + Deployment + Service + Route.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: erp-config
+  labels: { app: erp-service, part-of: erp }
+data:
+  ERP_DB_URL: jdbc:mysql://mysql:3306/erp_db
+  # No Kafka in the sandbox: orders still complete, ledger events stay PENDING in outbox_event.
+  ERP_OUTBOX_ENABLED: "false"
+  ERP_SIMULATE_FAILURE_AT: NONE
+  JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erp-service
+  labels: { app: erp-service, part-of: erp }
+  annotations:
+    # When a new build lands in the ImageStream, OpenShift swaps the image and rolls the Deployment.
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"erp-service:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"erp-service\")].image"}]
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    # a new pod must be Ready before the old one goes: zero-downtime rollout
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app: erp-service }
+  template:
+    metadata:
+      labels: { app: erp-service, part-of: erp }
+    spec:
+      containers:
+        - name: erp-service
+          # placeholder; the trigger annotation above replaces it with the ImageStream digest
+          image: erp-service:latest
+          ports:
+            - { name: http, containerPort: 8095 }
+          envFrom:
+            - configMapRef: { name: erp-config }
+          env:
+            - name: ERP_DB_USER
+              valueFrom: { secretKeyRef: { name: erp-db, key: username } }
+            - name: ERP_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: erp-db, key: password } }
+          # JVM + Flyway start is slow on a small CPU share: the startup probe gives it up to 3 min
+          # and holds off liveness until then, so a slow boot is never killed as "dead".
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          # liveness = the JVM/app is healthy; it does NOT check MySQL, so a DB outage never triggers restarts
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # readiness = can serve traffic (includes the db check); failing removes the pod from the Service
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits:   { cpu: "1", memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: erp-service
+  labels: { app: erp-service, part-of: erp }
+spec:
+  selector: { app: erp-service }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: erp-service
+  labels: { app: erp-service, part-of: erp }
+spec:
+  to: { kind: Service, name: erp-service }
+  port: { targetPort: http }
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

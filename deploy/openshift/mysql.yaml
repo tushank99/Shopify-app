@@ -1,0 +1,71 @@
+# MySQL 8 for the ERP service.
+# The sclorg image runs under OpenShift's restricted SCC (random UID); the official Docker Hub mysql image does not.
+# Credentials come from the "erp-db" Secret (created with `oc create secret`, never committed).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-data
+  labels: { app: mysql, part-of: erp }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels: { app: mysql, part-of: erp }
+spec:
+  replicas: 1
+  # RWO volume: the old pod must stop before the new one mounts it
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: mysql }
+  template:
+    metadata:
+      labels: { app: mysql, part-of: erp }
+    spec:
+      containers:
+        - name: mysql
+          image: quay.io/sclorg/mysql-80-c9s:c9s
+          ports:
+            - { name: mysql, containerPort: 3306 }
+          env:
+            - name: MYSQL_DATABASE
+              value: erp_db
+            - name: MYSQL_USER
+              valueFrom: { secretKeyRef: { name: erp-db, key: username } }
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: erp-db, key: password } }
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: erp-db, key: root-password } }
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "MYSQL_PWD=\"$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u \"$MYSQL_USER\" -D erp_db -e 'SELECT 1'"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 3306 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits:   { cpu: 500m, memory: 768Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: mysql-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels: { app: mysql, part-of: erp }
+spec:
+  selector: { app: mysql }
+  ports:
+    - { name: mysql, port: 3306, targetPort: mysql }

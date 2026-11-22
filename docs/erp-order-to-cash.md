@@ -11,6 +11,7 @@ It covers the three core flows of an ERP / supply-chain system:
 
 Run it: `docker compose -f docker-compose.infra.yml --profile app up -d --build mysql kafka kafka-init postgres ledger-service erp-service`
 then open Swagger UI at <http://localhost:8095/swagger-ui.html> (OpenAPI JSON at `/v3/api-docs`).
+Deploy to OpenShift / Kubernetes: see [`deploy/openshift/README.md`](../deploy/openshift/README.md).
 
 ## Maven layout
 
