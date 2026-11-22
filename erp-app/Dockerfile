@@ -21,7 +21,8 @@ FROM eclipse-temurin:21-jre-alpine-3.24
 WORKDIR /app
 RUN adduser -D -u 1001 erp
 COPY --from=build /build/erp-app/target/erp-service.jar /app/erp-service.jar
-USER erp
+# numeric UID so Kubernetes runAsNonRoot can verify it; OpenShift replaces it with a random UID (gid 0), which also works
+USER 1001
 EXPOSE 8095
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75"
 ENTRYPOINT ["java", "-jar", "/app/erp-service.jar"]
