@@ -10,6 +10,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
@@ -42,6 +43,12 @@ public class OutboxPublisher {
         this.outbox = outbox;
         this.kafka = kafka;
         this.tx = new TransactionTemplate(txManager);
+        // Under MySQL's default REPEATABLE READ, "WHERE status='PENDING' ... FOR UPDATE" also takes a GAP lock on the
+        // (status, id) index, so every saga inserting a new PENDING row (POST_LEDGER) waited for this transaction,
+        // i.e. for the Kafka sends. Under load that held all pool connections and orders failed (found by the
+        // 20-buyer concurrency test). READ COMMITTED takes record locks only: claimed rows stay locked
+        // (SKIP LOCKED still keeps instances apart) but new orders are never blocked by the relay.
+        this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         this.batchSize = batchSize;
         this.maxAttempts = maxAttempts;
         this.sendTimeoutMs = sendTimeoutMs;

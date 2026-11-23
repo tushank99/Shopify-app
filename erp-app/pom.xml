@@ -22,10 +22,41 @@
     <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
     <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-registry-prometheus</artifactId><scope>runtime</scope></dependency>
     <dependency><groupId>org.springdoc</groupId><artifactId>springdoc-openapi-starter-webmvc-ui</artifactId></dependency>
+
+    <!-- integration tests: real MySQL 8 (Testcontainers) + in-process Kafka broker -->
+    <dependency><groupId>org.testcontainers</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.testcontainers</groupId><artifactId>mysql</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-kafka-test</artifactId><scope>test</scope></dependency>
   </dependencies>
   <build>
     <finalName>erp-service</finalName>
     <plugins>
+      <!--
+        One coverage report for the whole ERP: unit tests of every module + the integration tests here.
+        Output: erp-app/target/site/jacoco-aggregate/index.html (and jacoco.csv / jacoco.xml for CI).
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Spring contexts + Kafka broker close in shutdown hooks; the JaCoCo agent writes its file there too -->
+          <forkedProcessExitTimeoutInSeconds>120</forkedProcessExitTimeoutInSeconds>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>report-aggregate</id>
+            <phase>verify</phase>
+            <goals><goal>report-aggregate</goal></goals>
+            <configuration>
+              <includeCurrentProject>true</includeCurrentProject>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
