@@ -1,6 +1,5 @@
 package com.shopify.erp.orders;
 
-import com.shopify.erp.common.ConflictException;
 import com.shopify.erp.common.NotFoundException;
 import com.shopify.erp.common.ObjectIds;
 import com.shopify.erp.common.OptimisticRetry;
@@ -112,12 +111,19 @@ public class OrderSagaService {
                 recordStep(orderId, RESERVE_STOCK, SagaStep.Outcome.SUCCEEDED, null);
                 return null;
             }));
-        } catch (ConflictException | NotFoundException e) {
-            // nothing was reserved (the reserve step is atomic), so there is nothing to compensate
-            tx.executeWithoutResult(s -> {
-                recordStep(orderId, RESERVE_STOCK, SagaStep.Outcome.FAILED, e.getMessage());
-                load(orderId).cancel(e.getMessage());
-            });
+        } catch (RuntimeException e) {
+            // Nothing was reserved (the reserve step is atomic), so there is nothing to compensate: just close the
+            // order. This covers business failures (no stock, unknown SKU) AND infrastructure ones (DB timeout),
+            // which would otherwise leave the order stuck in CREATED forever.
+            try {
+                tx.executeWithoutResult(s -> {
+                    recordStep(orderId, RESERVE_STOCK, SagaStep.Outcome.FAILED, e.getMessage());
+                    load(orderId).cancel(e.getMessage());
+                });
+            } catch (RuntimeException cancelError) {
+                log.error("Order {} could not be cancelled after RESERVE_STOCK failed: {}", orderId,
+                        cancelError.getMessage(), cancelError);
+            }
             throw e;
         }
 

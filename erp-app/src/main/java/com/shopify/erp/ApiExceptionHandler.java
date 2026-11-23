@@ -6,12 +6,19 @@ import com.shopify.erp.orders.SagaFailedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.TransientDataAccessException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.method.ParameterErrors;
+import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -56,9 +63,27 @@ public class ApiExceptionHandler {
         return p;
     }
 
+    /**
+     * Raised instead of MethodArgumentNotValidException when the controller method ALSO has constraints on plain
+     * parameters (e.g. @Size on the Idempotency-Key header of POST /api/orders): Spring then validates the whole method
+     * and reports body errors here. Field errors must be kept, or clients get a 400 with no hint of what is wrong.
+     */
     @ExceptionHandler(HandlerMethodValidationException.class)
     ProblemDetail invalidParam(HandlerMethodValidationException e) {
-        return problem(HttpStatus.BAD_REQUEST, "Invalid request parameter or header");
+        Map<String, String> errors = new LinkedHashMap<>();
+        for (ParameterValidationResult result : e.getParameterValidationResults()) {
+            if (result instanceof ParameterErrors bean) {
+                bean.getFieldErrors().forEach(f -> errors.putIfAbsent(f.getField(), f.getDefaultMessage()));
+            } else {
+                RequestHeader header = result.getMethodParameter().getParameterAnnotation(RequestHeader.class);
+                String name = header != null && !header.value().isEmpty()
+                        ? header.value() : result.getMethodParameter().getParameterName();
+                result.getResolvableErrors().forEach(err -> errors.putIfAbsent(name, err.getDefaultMessage()));
+            }
+        }
+        ProblemDetail p = problem(HttpStatus.BAD_REQUEST, "Validation failed");
+        p.setProperty("errors", errors);
+        return p;
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class, MissingServletRequestParameterException.class,
@@ -71,6 +96,18 @@ public class ApiExceptionHandler {
     ProblemDetail integrity(DataIntegrityViolationException e) {
         log.warn("Data integrity violation: {}", e.getMostSpecificCause().getMessage());
         return problem(HttpStatus.CONFLICT, "The request conflicts with existing data");
+    }
+
+    /**
+     * The database is temporarily unavailable (connection pool exhausted, lock timeout, deadlock victim). Nothing was
+     * committed for this request, so the client may safely retry: 503 + Retry-After, not a generic 500.
+     */
+    @ExceptionHandler({CannotCreateTransactionException.class, TransientDataAccessException.class})
+    ResponseEntity<ProblemDetail> temporarilyUnavailable(Exception e) {
+        log.warn("Database temporarily unavailable: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "1")
+                .body(problem(HttpStatus.SERVICE_UNAVAILABLE, "Temporarily unavailable, please retry"));
     }
 
     @ExceptionHandler(Exception.class)

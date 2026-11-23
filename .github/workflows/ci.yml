@@ -85,9 +85,9 @@ jobs:
   # ERP multi-module build (inventory, purchasing, orders, app). Compile + package only: automated ERP tests are
   # still "Planned" in docs/test-plan.md. The root pom lists ledger-service as a module, so the whole repo is checked out.
   erp-build:
-    name: ERP modules build (Maven)
+    name: ERP tests + coverage (JUnit 5, Mockito, Testcontainers, JaCoCo)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -97,5 +97,32 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Build erp-app and the modules it depends on
-        run: mvn -B -ntp -pl erp-app -am -DskipTests package
+      # unit tests in every erp-* module, then the Testcontainers (MySQL) + EmbeddedKafka integration tests in
+      # erp-app, then one JaCoCo report aggregated over all ERP modules
+      - name: Test erp-* modules
+        run: mvn -B -ntp -pl erp-app -am verify
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          CSV=erp-app/target/site/jacoco-aggregate/jacoco.csv
+          if [ ! -f "$CSV" ]; then echo "No coverage report (tests failed before verify)" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          {
+            echo "### ERP line coverage (JaCoCo)"
+            echo "| Module | Lines covered | Line coverage |"
+            echo "|---|---|---|"
+            # jacoco.csv: $1 GROUP (module), $8 LINE_MISSED, $9 LINE_COVERED
+            awk -F, 'NR>1 { m[$1]+=$8; c[$1]+=$9; tm+=$8; tc+=$9 }
+                     END { for (k in m) printf "| %s | %d / %d | %.1f%% |\n", k, c[k], c[k]+m[k], 100*c[k]/(c[k]+m[k]);
+                           printf "| **total** | %d / %d | **%.1f%%** |\n", tc, tc+tm, 100*tc/(tc+tm) }' "$CSV"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: erp-test-reports
+          path: |
+            erp-app/target/site/jacoco-aggregate/
+            erp-*/target/surefire-reports/
+          retention-days: 14

@@ -20,6 +20,9 @@
     <dependency><groupId>com.shopify</groupId><artifactId>erp-common</artifactId></dependency>
     <dependency><groupId>com.shopify</groupId><artifactId>erp-inventory</artifactId></dependency>
     <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-kafka</artifactId></dependency>
+
+    <!-- validates the produced event against contracts/order.placed.v1.schema.json -->
+    <dependency><groupId>com.networknt</groupId><artifactId>json-schema-validator</artifactId><scope>test</scope></dependency>
   </dependencies>
 
 </project>
