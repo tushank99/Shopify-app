@@ -13,6 +13,8 @@
   <name>erp-app</name>
   <description>Runnable Spring Boot ERP service (MySQL)</description>
   <dependencies>
+    <!-- direct (not only transitive) so the JaCoCo aggregate report includes it -->
+    <dependency><groupId>com.shopify</groupId><artifactId>erp-common</artifactId></dependency>
     <dependency><groupId>com.shopify</groupId><artifactId>erp-inventory</artifactId></dependency>
     <dependency><groupId>com.shopify</groupId><artifactId>erp-purchasing</artifactId></dependency>
     <dependency><groupId>com.shopify</groupId><artifactId>erp-orders</artifactId></dependency>
